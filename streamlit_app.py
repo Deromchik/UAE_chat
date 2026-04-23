@@ -64,8 +64,17 @@ SUPPORTED_INTENTS = frozenset({"skill_creation", "general_chat", "session_questi
 
 # Defaults for OpenRouter completion calls (session + intent agents)
 DEFAULT_OPENROUTER_MODEL = "google/gemini-2.5-pro"
+DEFAULT_COMPLETION_PERSONALIZATION_MODEL = "openai/gpt-4o-mini"
+DEFAULT_SESSION_ENGAGEMENT_MODEL = "google/gemini-2.5-pro"
 LLM_TEMPERATURE = 0.1
 COMPLETION_AGENT_REASONING_EFFORT = "high"
+
+STARTER_OUTPUT_LANG_OPTIONS: list[tuple[str, str]] = [
+    ("English", "english"),
+    ("German", "german"),
+    ("Ukrainian", "ukrainian"),
+    ("Russian", "russian"),
+]
 
 
 def build_session_messages(
@@ -259,6 +268,129 @@ def parse_intent(raw_text: str) -> str | None:
     return None
 
 
+def extract_first_complete_completion_rationale(session_json: Any) -> str | None:
+    """
+    From uploaded session JSON, return completion_rationale for the first goal entry
+    (in list order under the first discovered `goals` array) where goal_completion_status is 'complete'.
+    """
+
+    def collect_goal_lists(node: Any) -> list[list[Any]]:
+        found: list[list[Any]] = []
+        if isinstance(node, dict):
+            g = node.get("goals")
+            if isinstance(g, list):
+                found.append(g)
+            for v in node.values():
+                found.extend(collect_goal_lists(v))
+        elif isinstance(node, list):
+            for item in node:
+                found.extend(collect_goal_lists(item))
+        return found
+
+    for goals in collect_goal_lists(session_json):
+        for item in goals:
+            if not isinstance(item, dict):
+                continue
+            status = str(item.get("goal_completion_status") or "").strip().lower()
+            if status != "complete":
+                continue
+            cr = item.get("completion_rationale")
+            if isinstance(cr, str) and cr.strip():
+                return cr.strip()
+    return None
+
+
+def parse_json_single_text(raw_text: str, primary_key: str) -> str:
+    """Parse model JSON output; fall back to whole body or generic answer keys."""
+    try:
+        parsed = json.loads(raw_text)
+        if isinstance(parsed, dict):
+            v = parsed.get(primary_key)
+            if isinstance(v, str) and v.strip():
+                return v.strip()
+            return _extract_answer_from_parsed(parsed)
+    except json.JSONDecodeError:
+        return (raw_text or "").strip()
+    except Exception:
+        return (raw_text or "").strip()
+    return (raw_text or "").strip()
+
+
+def build_completion_personalization_messages(
+    *,
+    user_name: str,
+    output_language: str,
+    completion_rationale: str,
+) -> list[dict[str, str]]:
+    prompt = {
+        "task": (
+            "Rewrite the session completion rationale into one short, warm, personalized line for the user."
+        ),
+        "inputs": {
+            "user_name": user_name,
+            "output_language": output_language,
+            "completion_rationale": completion_rationale,
+        },
+        "rules": [
+            "Greet the user by name naturally (spoken style, not formal ledgers).",
+            "Convey that they have just finished a task or goal, using only facts implied by completion_rationale; do not invent metrics or events.",
+            "Write the entire message in the language indicated by output_language: "
+            "english, german, ukrainian, or russian.",
+            "Do not mention JSON, schemas, fields, tiers, models, or any system internals.",
+            "Do not add explanations, labels, or markdown; the user sees only the final line.",
+            'Output format: a single JSON object {"personalized_message": "..."}. '
+            "Do not return an array; do not wrap the object in a list.",
+        ],
+    }
+    return [
+        {
+            "role": "system",
+            "content": "Return JSON only. You personalize brief user-facing completion messages.",
+        },
+        {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+    ]
+
+
+def build_session_engagement_messages(
+    *,
+    user_name: str,
+    output_language: str,
+    session_json: Any,
+    steps_json: Any,
+) -> list[dict[str, str]]:
+    session_context = {"session": session_json, "steps": steps_json}
+    prompt = {
+        "task": (
+            "From the user's session data, produce one engaging, conversational message that highlights "
+            "interesting, data-backed facts (e.g. apps visited, repetition, flow between tools) and invites "
+            "them to chat more about their session."
+        ),
+        "inputs": {
+            "user_name": user_name,
+            "output_language": output_language,
+            "session_context": session_context,
+        },
+        "rules": [
+            "Use a hook such as 'Did you know ...?' or a friendly rhetorical question; address the user by name where natural.",
+            "Ground every claim in session_context; if something is not in the data, do not assert it.",
+            "If the data is sparse, still offer a light, curiosity-driven prompt tied to what is known.",
+            "Write entirely in the language indicated by output_language: english, german, ukrainian, or russian.",
+            "Encourage further conversation about their data (e.g. offer to explore more).",
+            "Do not mention JSON, schemas, uploads, or system internals.",
+            "Do not add explanations or headings; output only the user-facing line inside the JSON value.",
+            'Output format: a single JSON object {"engagement_message": "..."}. '
+            "Do not return an array; do not wrap the object in a list.",
+        ],
+    }
+    return [
+        {
+            "role": "system",
+            "content": "Return JSON only. You surface engaging, accurate insights from session analytics.",
+        },
+        {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+    ]
+
+
 def get_api_key() -> str:
     try:
         return str(st.secrets.get("OPENROUTER_API_KEY", "") or "").strip()
@@ -291,6 +423,10 @@ def init_state() -> None:
         st.session_state.upload_steps = None
     if "conversation_id" not in st.session_state:
         st.session_state.conversation_id = str(uuid.uuid4())
+    if "starter_personalized" not in st.session_state:
+        st.session_state.starter_personalized = None
+    if "starter_engagement" not in st.session_state:
+        st.session_state.starter_engagement = None
 
 
 def main() -> None:
@@ -358,6 +494,77 @@ def main() -> None:
             except json.JSONDecodeError as e:
                 st.error(f"Steps file is not valid JSON: {e}")
 
+        st.subheader("Welcome agents (pre-chat)")
+        starter_user_name = st.text_input("User name", value="Peter", key="starter_user_name")
+        lang_pair = st.selectbox(
+            "Output language",
+            options=STARTER_OUTPUT_LANG_OPTIONS,
+            index=0,
+            format_func=lambda pair: pair[0],
+            key="starter_lang_select",
+        )
+        output_language_code = lang_pair[1]
+
+        if st.button("Start", key="starter_run_button"):
+            if not api_key:
+                st.error("Configure OPENROUTER_API_KEY first.")
+            else:
+                sess = st.session_state.get("upload_session")
+                steps_pl = st.session_state.get("upload_steps")
+                rationale = extract_first_complete_completion_rationale(sess) if sess is not None else None
+                if sess is None:
+                    st.error("Upload a Session (JSON) file first.")
+                elif not rationale:
+                    st.error(
+                        "No completion_rationale found for a goal with goal_completion_status "
+                        "'complete' in the session JSON."
+                    )
+                else:
+                    st.session_state.starter_personalized = None
+                    st.session_state.starter_engagement = None
+                    m1 = build_completion_personalization_messages(
+                        user_name=starter_user_name.strip() or "Peter",
+                        output_language=output_language_code,
+                        completion_rationale=rationale,
+                    )
+                    r1 = call_openrouter(
+                        api_key,
+                        DEFAULT_COMPLETION_PERSONALIZATION_MODEL,
+                        m1,
+                        temperature=LLM_TEMPERATURE,
+                        use_json_object=True,
+                        pipeline=st.session_state.pipeline,
+                        agent_name="completion_personalization",
+                    )
+                    if r1.status_code != 200:
+                        st.error(f"Completion personalization agent HTTP {r1.status_code}. See pipeline export.")
+                    else:
+                        st.session_state.starter_personalized = parse_json_single_text(
+                            r1.text, "personalized_message"
+                        )
+                        m2 = build_session_engagement_messages(
+                            user_name=starter_user_name.strip() or "Peter",
+                            output_language=output_language_code,
+                            session_json=sess,
+                            steps_json=steps_pl,
+                        )
+                        r2 = call_openrouter(
+                            api_key,
+                            DEFAULT_SESSION_ENGAGEMENT_MODEL,
+                            m2,
+                            temperature=LLM_TEMPERATURE,
+                            use_json_object=True,
+                            pipeline=st.session_state.pipeline,
+                            agent_name="session_engagement",
+                        )
+                        if r2.status_code != 200:
+                            st.error(f"Session engagement agent HTTP {r2.status_code}. See pipeline export.")
+                        else:
+                            st.session_state.starter_engagement = parse_json_single_text(
+                                r2.text, "engagement_message"
+                            )
+                    st.rerun()
+
         pending_skill_q = st.text_input(
             "Pending skill question (optional, session agent only)",
             value="",
@@ -373,6 +580,8 @@ def main() -> None:
                 st.session_state.conversation_id = str(uuid.uuid4())
                 st.session_state.upload_session = None
                 st.session_state.upload_steps = None
+                st.session_state.starter_personalized = None
+                st.session_state.starter_engagement = None
                 st.rerun()
         with c2:
             st.caption(f"conversation_id: `{st.session_state.conversation_id[:8]}…`")
@@ -394,6 +603,16 @@ def main() -> None:
 
     st.title("Intent + Session agents (OpenRouter)")
     st.caption("Chat uses the same `recent_messages` slice (last 6) for intent and session agents.")
+
+    sp0 = st.session_state.get("starter_personalized")
+    se0 = st.session_state.get("starter_engagement")
+    if sp0 or se0:
+        st.subheader("Welcome flow (from Start)")
+        if sp0:
+            st.markdown(sp0)
+        if se0:
+            st.markdown(se0)
+        st.divider()
 
     for m in st.session_state.messages:
         with st.chat_message(m["role"]):
