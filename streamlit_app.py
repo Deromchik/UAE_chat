@@ -213,11 +213,14 @@ def _compact_element(el: dict[str, Any]) -> dict[str, Any]:
 
 def _compact_step(step: dict[str, Any]) -> dict[str, Any]:
     """Produce a compact, type-aware projection of a single session step."""
-    stype = str(step.get("type") or "")
+    stype = str(step.get("type") or step.get("t") or "")
     base: dict[str, Any] = {
-        "id": step.get("stepId") or step.get("step_id"),
+        "id": step.get("stepId") or step.get("step_id") or step.get("id"),
         "type": stype or None,
-        "time": _clip(step.get("local") or step.get("iso") or step.get("time"), TEXT_SHORT),
+        "time": _clip(
+            step.get("local") or step.get("iso") or step.get("time"),
+            TEXT_SHORT,
+        ),
         "url": _clip(step.get("url"), TEXT_MED),
         "title": _clip(step.get("title"), TEXT_SHORT),
     }
@@ -292,6 +295,44 @@ def _slim_goals(goals: Any) -> list[dict[str, Any]]:
 
 
 SUPPORTED_INTENTS = frozenset({"skill_creation", "general_chat", "session_question"})
+
+# Defaults for OpenRouter completion calls (session + intent agents)
+DEFAULT_OPENROUTER_MODEL = "google/gemini-2.5-pro"
+LLM_TEMPERATURE = 0.1
+COMPLETION_AGENT_REASONING_EFFORT = "high"
+
+
+def normalize_session_data_upload(parsed: Any) -> dict[str, Any]:
+    """
+    Accept either a plain session object { status, goals, metrics, ... } or
+    an export wrapper like { "result": { ... } } (parsed activity JSON).
+    """
+    if not isinstance(parsed, dict):
+        raise ValueError("Session JSON must be an object, not a list.")
+    inner = parsed.get("result")
+    if isinstance(inner, dict):
+        return dict(inner)
+    return dict(parsed)
+
+
+def normalize_raw_steps_upload(parsed: Any) -> list[dict[str, Any]]:
+    """
+    Accept a JSON array of step objects, or a wrapper with one of
+    raw_steps / steps / session_steps / events.
+    A single step object is wrapped as a one-element list.
+    """
+    if isinstance(parsed, list):
+        return [x for x in parsed if isinstance(x, dict)]
+    if isinstance(parsed, dict):
+        for k in ("raw_steps", "session_steps", "steps", "events"):
+            v = parsed.get(k)
+            if isinstance(v, list):
+                return [x for x in v if isinstance(x, dict)]
+        if any(k in parsed for k in ("stepId", "step_id", "type", "t")) or isinstance(
+            parsed.get("id"), int
+        ):
+            return [parsed]
+    raise ValueError("Steps JSON must be an array, or an object with a steps array key.")
 
 
 def build_session_messages(
@@ -413,6 +454,7 @@ def call_openrouter(
         "model": model,
         "messages": messages,
         "temperature": temperature,
+        "reasoning": {"effort": COMPLETION_AGENT_REASONING_EFFORT},
     }
     if use_json_object and supports_json_format(model):
         payload["response_format"] = {"type": "json_object"}
@@ -449,9 +491,19 @@ def call_openrouter(
         return r, resp_json, raw_text
 
     r, resp_json, raw_text = _post(payload)
-    if r.status_code == 400 and "response_format" in payload:
-        payload_retry = {k: v for k, v in payload.items() if k != "response_format"}
-        r, resp_json, raw_text = _post(payload_retry)
+    working = dict(payload)
+    if r.status_code == 400 and "response_format" in working:
+        working = {k: v for k, v in working.items() if k != "response_format"}
+        r, resp_json, raw_text = _post(working)
+    if r.status_code == 400 and "reasoning" in working:
+        working = {k: v for k, v in working.items() if k != "reasoning"}
+        r, resp_json, raw_text = _post(working)
+    if r.status_code == 400 and "response_format" in working:
+        working = {k: v for k, v in working.items() if k != "response_format"}
+        r, resp_json, raw_text = _post(working)
+    if r.status_code == 400:
+        minimal = {k: v for k, v in payload.items() if k not in ("response_format", "reasoning")}
+        r, resp_json, raw_text = _post(minimal)
 
     return OpenRouterResult(text=raw_text, status_code=r.status_code, response_json=resp_json)
 
@@ -533,6 +585,7 @@ def main() -> None:
             st.success("API key loaded from secrets.")
 
         presets = [
+            DEFAULT_OPENROUTER_MODEL,
             "openai/gpt-4o-mini",
             "openai/gpt-4o",
             "anthropic/claude-3.5-sonnet",
@@ -540,7 +593,11 @@ def main() -> None:
         ]
         choice = st.selectbox("Model", ["Custom"] + presets, index=1, key="model_choice")
         if choice == "Custom":
-            model = st.text_input("Custom model id", value="openai/gpt-4o-mini", key="custom_model")
+            model = st.text_input(
+                "Custom model id",
+                value=DEFAULT_OPENROUTER_MODEL,
+                key="custom_model",
+            )
         else:
             model = choice
         st.session_state.model = model
@@ -554,34 +611,28 @@ def main() -> None:
 
         st.subheader("Session data (JSON uploads)")
         f_sess = st.file_uploader(
-            "session_data.json — object with status, goals, metrics",
+            "Session export — JSON object, or { \"result\": { … } } (parsed activity)",
             type=["json"],
             key="session_json",
         )
         f_steps = st.file_uploader(
-            "raw_steps.json — array of session step objects",
+            "Steps — JSON array, or { \"session_steps\" / \"raw_steps\" / \"steps\": [ … ] }",
             type=["json"],
             key="steps_json",
         )
 
         if f_sess is not None:
             try:
-                st.session_state.session_data = json.loads(f_sess.getvalue().decode("utf-8"))
-                if not isinstance(st.session_state.session_data, dict):
-                    st.error("session_data.json must be a JSON object.")
-                    st.session_state.session_data = {}
+                raw_parsed = json.loads(f_sess.getvalue().decode("utf-8"))
+                st.session_state.session_data = normalize_session_data_upload(raw_parsed)
             except Exception as e:
                 st.error(f"Invalid session JSON: {e}")
                 st.session_state.session_data = {}
 
         if f_steps is not None:
             try:
-                parsed = json.loads(f_steps.getvalue().decode("utf-8"))
-                if not isinstance(parsed, list):
-                    st.error("raw_steps.json must be a JSON array.")
-                    st.session_state.raw_steps = []
-                else:
-                    st.session_state.raw_steps = parsed
+                raw_parsed = json.loads(f_steps.getvalue().decode("utf-8"))
+                st.session_state.raw_steps = normalize_raw_steps_upload(raw_parsed)
             except Exception as e:
                 st.error(f"Invalid steps JSON: {e}")
                 st.session_state.raw_steps = []
@@ -660,7 +711,7 @@ def main() -> None:
             api_key,
             model_used,
             msgs,
-            temperature=0.2,
+            temperature=LLM_TEMPERATURE,
             use_json_object=True,
             pipeline=st.session_state.pipeline,
             agent_name="session_question",
@@ -675,7 +726,7 @@ def main() -> None:
             api_key,
             model_used,
             msgs,
-            temperature=0.0,
+            temperature=LLM_TEMPERATURE,
             use_json_object=True,
             pipeline=st.session_state.pipeline,
             agent_name="intent_classifier",
@@ -700,7 +751,7 @@ def main() -> None:
                 api_key,
                 model_used,
                 msgs2,
-                temperature=0.2,
+                temperature=LLM_TEMPERATURE,
                 use_json_object=True,
                 pipeline=st.session_state.pipeline,
                 agent_name="session_question",
