@@ -708,6 +708,7 @@ def render_chart_spec(spec: dict[str, Any]) -> None:
 
     ct = str(spec.get("chart_type", "bar")).lower()
     title = str(spec.get("title", ""))
+    st.markdown(f"**chart_type:** `{ct}`")
 
     def _colors(n: int) -> list[str]:
         return (_VIZ_COLORS * ((n // len(_VIZ_COLORS)) + 1))[:n]
