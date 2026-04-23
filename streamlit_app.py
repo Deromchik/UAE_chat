@@ -60,7 +60,7 @@ def _extract_answer_from_parsed(parsed: Any) -> str:
     return ""
 
 
-SUPPORTED_INTENTS = frozenset({"skill_creation", "general_chat", "session_question"})
+SUPPORTED_INTENTS = frozenset({"skill_creation", "general_chat", "session_question", "visualization_request"})
 
 # Defaults for OpenRouter completion calls (session + intent agents)
 DEFAULT_OPENROUTER_MODEL = "google/gemini-2.5-pro"
@@ -131,14 +131,22 @@ def build_session_messages(
 
 def build_intent_classifier_messages(message: str, history: list[dict[str, str]]) -> list[dict[str, str]]:
     prompt = {
-        "task": "Classify the user's message intent.",
+        "task": "Classify the user's message intent into exactly one of the four allowed values.",
         "rules": [
-            "If the user asks about tasks, actions, goals, or metrics within the current session or report, output 'session_question'.",
-            "If the user is just saying hello, asking general questions, or small-talking, output 'general_chat'.",
+            "Output 'visualization_request' if the user asks for a chart, graph, visualization, plot, diagram, "
+            "comparison, ranking, distribution, trend, how many times something happened, how much time was spent, "
+            "or any request that implies a visual/graphical representation of data.",
+            "Output 'session_question' if the user asks a factual question about tasks, actions, goals, "
+            "or metrics within the current session or report — but does NOT imply a chart.",
+            "Output 'general_chat' if the user is greeting, small-talking, or asking general questions "
+            "unrelated to the session data.",
+            "Output 'skill_creation' only if the user explicitly asks to create or configure a new skill or automation.",
+            "When in doubt between visualization_request and session_question, prefer visualization_request "
+            "if any graphical representation is implied.",
         ],
         "recent_messages": history[-6:],
         "user_message": message,
-        "output": {"intent": "general_chat | session_question"},
+        "output": {"intent": "general_chat | session_question | visualization_request | skill_creation"},
     }
     return [
         {
@@ -261,7 +269,7 @@ def parse_intent(raw_text: str) -> str | None:
     try:
         parsed = json.loads(raw_text)
         intent = str(parsed.get("intent") or "").strip().lower()
-        if intent in {"session_question", "general_chat"}:
+        if intent in {"session_question", "general_chat", "visualization_request", "skill_creation"}:
             return intent
     except Exception:
         pass
@@ -390,6 +398,119 @@ def build_session_engagement_messages(
         },
         {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
     ]
+
+
+_CHART_SPEC_SCHEMA = {
+    "chart_type": "bar | line",
+    "title": "human-readable chart title",
+    "x_label": "label for X axis",
+    "y_label": "label for Y axis",
+    "x_values": ["category or time string", "..."],
+    "y_values": ["number (same length as x_values)", "..."],
+}
+
+
+def build_visualization_messages(
+    *,
+    question: str,
+    session_json: Any,
+    steps_json: Any,
+    recent_history: list[dict[str, str]],
+    pending_skill_question: str | None,
+) -> list[dict[str, str]]:
+    """
+    Single call that returns both a text answer and a chart_spec derived from session data.
+    chart_spec is null when the data does not support a meaningful chart.
+    """
+    session_context = {"session": session_json, "steps": steps_json}
+    rules = [
+        "Answer the user's question using ONLY the data in 'session_context'.",
+        "CRITICAL LANGUAGE RULE: Always write 'assistant_answer' in the same natural language as 'user_question'.",
+        "Simultaneously produce a chart_spec JSON object that best visualises the answer.",
+        "Allowed chart_type values: 'bar' (for categories, counts, scores) or 'line' (for time-series).",
+        "x_values and y_values MUST be the same length; y_values must contain only numbers.",
+        "Derive x_values and y_values PURELY from session_context; do NOT invent any numbers.",
+        "If the session data does not contain enough numeric information for a meaningful chart, set chart_spec to null.",
+        "Do not mention JSON, schemas, or system internals in assistant_answer.",
+        "Output format: a single JSON object with exactly two keys: 'assistant_answer' (string) and "
+        "'chart_spec' (object matching chart_spec_schema, or null). "
+        "Do NOT return an array; do NOT wrap the object in a list.",
+    ]
+    if pending_skill_question:
+        rules.append(
+            f"CRITICAL: After answering, seamlessly ask the following pending question: '{pending_skill_question}'"
+        )
+    prompt = {
+        "task": (
+            "You are a data-driven assistant. Answer the user's question AND produce a chart "
+            "that visually represents the answer, both derived from 'session_context'."
+        ),
+        "rules": rules,
+        "chart_spec_schema": _CHART_SPEC_SCHEMA,
+        "session_context": session_context,
+        "recent_messages": (recent_history or [])[-6:],
+        "user_question": question,
+        "output": {
+            "assistant_answer": "concise text answer",
+            "chart_spec": _CHART_SPEC_SCHEMA,
+        },
+    }
+    return [
+        {
+            "role": "system",
+            "content": (
+                f"{SYSTEM_LANGUAGE_DIRECTIVE} Return JSON only. "
+                "You are an analytical session assistant that produces both text answers and chart specs."
+            ),
+        },
+        {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
+    ]
+
+
+def parse_visualization_response(raw_text: str) -> tuple[str, dict[str, Any] | None]:
+    """Return (assistant_answer, chart_spec_or_None)."""
+    answer = ""
+    chart_spec: dict[str, Any] | None = None
+    try:
+        parsed = json.loads(raw_text)
+        if isinstance(parsed, dict):
+            answer = str(parsed.get("assistant_answer") or "").strip()
+            cs = parsed.get("chart_spec")
+            if isinstance(cs, dict) and cs:
+                x = cs.get("x_values")
+                y = cs.get("y_values")
+                if (
+                    isinstance(x, list) and isinstance(y, list)
+                    and len(x) == len(y) > 0
+                ):
+                    chart_spec = cs
+    except Exception:
+        answer = raw_text.strip()
+    if not answer:
+        answer = "I could not generate an answer from the session data."
+    return answer, chart_spec
+
+
+def render_chart_spec(spec: dict[str, Any]) -> None:
+    """Render a chart_spec dict using st.bar_chart / st.line_chart."""
+    import pandas as pd
+
+    title = spec.get("title", "")
+    x_label = spec.get("x_label", "")
+    y_label = spec.get("y_label", "")
+    x_values = spec.get("x_values", [])
+    y_values = spec.get("y_values", [])
+    chart_type = str(spec.get("chart_type", "bar")).lower()
+
+    if title:
+        st.caption(f"**{title}**")
+
+    df = pd.DataFrame({x_label or "x": x_values, y_label or "y": y_values})
+
+    if chart_type == "line":
+        st.line_chart(df, x=x_label or "x", y=y_label or "y", x_label=x_label, y_label=y_label)
+    else:
+        st.bar_chart(df, x=x_label or "x", y=y_label or "y", x_label=x_label, y_label=y_label)
 
 
 def get_api_key() -> str:
@@ -617,6 +738,9 @@ def main() -> None:
     for m in st.session_state.messages:
         with st.chat_message(m["role"]):
             st.markdown(m["content"])
+            cs = m.get("chart_spec")
+            if cs:
+                render_chart_spec(cs)
 
     if not api_key:
         st.info("Configure `OPENROUTER_API_KEY` in secrets to send messages.")
@@ -632,15 +756,43 @@ def main() -> None:
     recent = prior_hist[-6:] if len(prior_hist) > 6 else prior_hist
 
     parts: list[str] = []
+    pending_chart_spec: dict[str, Any] | None = None
     session_payload = st.session_state.get("upload_session")
     steps_payload = st.session_state.get("upload_steps")
     model_used = st.session_state.get("model", model)
+
+    def _run_visualization(source_label: str) -> None:
+        nonlocal pending_chart_spec
+        vmsgs = build_visualization_messages(
+            question=user_text,
+            session_json=session_payload,
+            steps_json=steps_payload,
+            recent_history=recent,
+            pending_skill_question=pending_skill_q.strip() or None,
+        )
+        vres = call_openrouter(
+            api_key,
+            model_used,
+            vmsgs,
+            temperature=LLM_TEMPERATURE,
+            use_json_object=True,
+            pipeline=st.session_state.pipeline,
+            agent_name="visualization_agent",
+        )
+        if vres.status_code != 200:
+            parts.append(f"Visualization agent HTTP {vres.status_code}. Check pipeline export.")
+        else:
+            v_answer, v_chart = parse_visualization_response(vres.text)
+            parts.append(v_answer)
+            pending_chart_spec = v_chart
 
     if explicit_intent == "skill_creation":
         parts.append(
             "**Intent routing:** `skill_creation` — demo has no extra LLM for this path; "
             "configure skill flow in your backend."
         )
+    elif explicit_intent == "visualization_request":
+        _run_visualization("direct")
     elif explicit_intent == "session_question":
         msgs = build_session_messages(
             question=user_text,
@@ -681,7 +833,9 @@ def main() -> None:
             src = "llm"
         parts.append(f"**Classifier ({src}):** `{resolved}`")
 
-        if resolved == "session_question":
+        if resolved == "visualization_request":
+            _run_visualization("classifier")
+        elif resolved == "session_question":
             msgs2 = build_session_messages(
                 question=user_text,
                 session_json=session_payload,
@@ -704,7 +858,10 @@ def main() -> None:
                 parts.append(parse_session_answer(res2.text))
 
     assistant_text = "\n\n".join(parts)
-    st.session_state.messages.append({"role": "assistant", "content": assistant_text})
+    assistant_msg: dict[str, Any] = {"role": "assistant", "content": assistant_text}
+    if pending_chart_spec is not None:
+        assistant_msg["chart_spec"] = pending_chart_spec
+    st.session_state.messages.append(assistant_msg)
     st.rerun()
 
 
