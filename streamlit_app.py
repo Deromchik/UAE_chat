@@ -353,7 +353,6 @@ def build_completion_personalization_messages(
 
 def build_session_engagement_messages(
     *,
-    user_name: str,
     output_language: str,
     session_json: Any,
     steps_json: Any,
@@ -361,21 +360,21 @@ def build_session_engagement_messages(
     session_context = {"session": session_json, "steps": steps_json}
     prompt = {
         "task": (
-            "From the user's session data, produce one engaging, conversational message that highlights "
-            "interesting, data-backed facts (e.g. apps visited, repetition, flow between tools) and invites "
-            "them to chat more about their session."
+            "From the session data, produce one engaging message that highlights interesting, data-backed facts "
+            "(e.g. apps visited, repetition, flow between tools) and invites the reader to chat more about the session."
         ),
         "inputs": {
-            "user_name": user_name,
             "output_language": output_language,
             "session_context": session_context,
         },
         "rules": [
-            "Use a hook such as 'Did you know ...?' or a friendly rhetorical question; address the user by name where natural.",
+            "CRITICAL: Do not greet. No salutations or openers such as Hi, Hello, Hey, Dear, Good morning/afternoon, "
+            "or any equivalent in the output language (including non-English). Start directly with the fact or hook.",
+            "Use a hook such as 'Did you know ...?' or a rhetorical question — without any greeting before it.",
             "Ground every claim in session_context; if something is not in the data, do not assert it.",
             "If the data is sparse, still offer a light, curiosity-driven prompt tied to what is known.",
             "Write entirely in the language indicated by output_language: english, german, ukrainian, or russian.",
-            "Encourage further conversation about their data (e.g. offer to explore more).",
+            "Encourage further conversation about the session data (e.g. offer to explore more).",
             "Do not mention JSON, schemas, uploads, or system internals.",
             "Do not add explanations or headings; output only the user-facing line inside the JSON value.",
             'Output format: a single JSON object {"engagement_message": "..."}. '
@@ -385,7 +384,9 @@ def build_session_engagement_messages(
     return [
         {
             "role": "system",
-            "content": "Return JSON only. You surface engaging, accurate insights from session analytics.",
+            "content": (
+                "Return JSON only. You surface engaging, accurate insights from session analytics. "
+            ),
         },
         {"role": "user", "content": json.dumps(prompt, ensure_ascii=False)},
     ]
@@ -543,7 +544,6 @@ def main() -> None:
                             r1.text, "personalized_message"
                         )
                         m2 = build_session_engagement_messages(
-                            user_name=starter_user_name.strip() or "Peter",
                             output_language=output_language_code,
                             session_json=sess,
                             steps_json=steps_pl,
