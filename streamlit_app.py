@@ -400,14 +400,177 @@ def build_session_engagement_messages(
     ]
 
 
-_CHART_SPEC_SCHEMA = {
-    "chart_type": "bar | line",
-    "title": "human-readable chart title",
-    "x_label": "label for X axis",
-    "y_label": "label for Y axis",
-    "x_values": ["category or time string", "..."],
-    "y_values": ["number (same length as x_values)", "..."],
+# ---------------------------------------------------------------------------
+# Visualization: 14 chart-spec schemas + Plotly dark-theme renderer
+# ---------------------------------------------------------------------------
+
+CHART_SPEC_SCHEMAS: dict[str, Any] = {
+    "bar": {
+        "chart_type": "bar",
+        "title": "str",
+        "x_label": "str", "y_label": "str",
+        "x_values": ["str | number — category labels"],
+        "y_values": ["number — bar heights, same length as x_values"],
+    },
+    "horizontal_bar": {
+        "chart_type": "horizontal_bar",
+        "title": "str",
+        "x_label": "str", "y_label": "str",
+        "x_values": ["number — bar lengths, same length as y_values"],
+        "y_values": ["str — category labels"],
+    },
+    "line": {
+        "chart_type": "line",
+        "title": "str",
+        "x_label": "str", "y_label": "str",
+        "x_values": ["str | number — step or time labels"],
+        "y_values": ["number — same length as x_values"],
+    },
+    "area": {
+        "chart_type": "area",
+        "title": "str",
+        "x_label": "str", "y_label": "str",
+        "x_values": ["str | number"],
+        "y_values": ["number — same length as x_values"],
+    },
+    "pie": {
+        "chart_type": "pie",
+        "title": "str",
+        "labels": ["str — slice names"],
+        "values": ["number — slice sizes, same length as labels"],
+    },
+    "donut": {
+        "chart_type": "donut",
+        "title": "str",
+        "center_label": "str — text shown in the hole",
+        "labels": ["str"],
+        "values": ["number — same length as labels"],
+    },
+    "scatter": {
+        "chart_type": "scatter",
+        "title": "str",
+        "x_label": "str", "y_label": "str",
+        "x_values": ["number"],
+        "y_values": ["number — same length as x_values"],
+        "point_labels": ["str — one per point, same length as x_values"],
+    },
+    "stacked_bar": {
+        "chart_type": "stacked_bar",
+        "title": "str",
+        "x_label": "str", "y_label": "str",
+        "x_values": ["str — category labels"],
+        "series": [{"name": "str", "values": ["number — one per x_value"]}],
+    },
+    "funnel": {
+        "chart_type": "funnel",
+        "title": "str",
+        "stages": ["str — stage names ordered wide to narrow"],
+        "values": ["number — same length as stages"],
+    },
+    "gauge": {
+        "chart_type": "gauge",
+        "title": "str",
+        "value": "number",
+        "min_value": "number",
+        "max_value": "number",
+        "label": "str — unit or short description",
+    },
+    "bubble": {
+        "chart_type": "bubble",
+        "title": "str",
+        "x_label": "str", "y_label": "str",
+        "x_values": ["number"],
+        "y_values": ["number — same length as x_values"],
+        "sizes": ["number — bubble sizes, same length as x_values"],
+        "labels": ["str — point labels, same length as x_values"],
+    },
+    "treemap": {
+        "chart_type": "treemap",
+        "title": "str",
+        "labels": ["str — node names (include parent names too)"],
+        "parents": ["str — parent name; empty string for root nodes"],
+        "values": ["number — node sizes, same length as labels"],
+    },
+    "heatmap": {
+        "chart_type": "heatmap",
+        "title": "str",
+        "x_label": "str", "y_label": "str",
+        "x_values": ["str — column labels"],
+        "y_values": ["str — row labels"],
+        "z_values": [["number — row×col matrix; rows==len(y_values), cols==len(x_values)"]],
+    },
+    "timeline": {
+        "chart_type": "timeline",
+        "title": "str",
+        "tasks": ["str — task or goal names"],
+        "start_values": ["number — start step id, same length as tasks"],
+        "end_values": ["number — end step id, same length as tasks"],
+        "categories": ["str — grouping label per task, same length as tasks"],
+    },
 }
+
+_CHART_TYPE_GUIDANCE: dict[str, str] = {
+    "bar":           "counts, scores, or comparisons across ≤12 categories (vertical bars)",
+    "horizontal_bar":"rankings or comparisons with long category names (horizontal bars)",
+    "line":          "trends or progression over sequential steps or time (connected points)",
+    "area":          "cumulative trends or time-on-task (filled line)",
+    "pie":           "proportions of a whole — best with 2–7 slices",
+    "donut":         "proportions with a center summary label or total",
+    "scatter":       "correlation between two numeric metrics, one point per goal/action",
+    "stacked_bar":   "breakdown per category into sub-groups (2+ stacked series)",
+    "funnel":        "pipeline stages, completion drop-off, or sequential narrowing",
+    "gauge":         "single KPI or percentage — exactly one numeric value with min/max",
+    "bubble":        "three-dimensional view: x-position, y-position, and a size dimension",
+    "treemap":       "hierarchical proportions — tool → goal → sub-action sizes",
+    "heatmap":       "frequency or intensity matrix across two categorical axes",
+    "timeline":      "step-id or time ranges per goal/task (Gantt-style bars)",
+}
+
+# Plotly dark-theme palette & helpers
+_VIZ_COLORS = [
+    "#818cf8", "#a78bfa", "#f472b6", "#fb7185", "#fb923c",
+    "#fbbf24", "#34d399", "#22d3ee", "#38bdf8", "#60a5fa",
+]
+_VIZ_DARK_BG = "#0f172a"
+_VIZ_PAPER   = "#1e293b"
+_VIZ_TEXT    = "#e2e8f0"
+_VIZ_GRID    = "#334155"
+_VIZ_AXIS    = "#64748b"
+
+
+def _apply_dark_layout(
+    fig: Any,
+    title: str = "",
+    margin: dict[str, int] | None = None,
+) -> Any:
+    m = margin or {"t": 55, "b": 50, "l": 65, "r": 20, "pad": 4}
+    fig.update_layout(
+        title={"text": title, "font": {"size": 16, "color": _VIZ_TEXT}, "x": 0.01},
+        paper_bgcolor=_VIZ_PAPER,
+        plot_bgcolor=_VIZ_DARK_BG,
+        font={"family": "Inter, system-ui, sans-serif", "color": _VIZ_TEXT},
+        margin=m,
+        colorway=_VIZ_COLORS,
+        legend={
+            "bgcolor": "rgba(15,23,42,0.8)", "bordercolor": _VIZ_GRID,
+            "borderwidth": 1, "font": {"size": 12},
+        },
+        hoverlabel={
+            "bgcolor": "#1e293b", "bordercolor": "#475569",
+            "font": {"color": _VIZ_TEXT},
+        },
+    )
+    fig.update_xaxes(
+        gridcolor=_VIZ_GRID, linecolor=_VIZ_AXIS,
+        tickfont={"color": _VIZ_TEXT}, title_font={"color": _VIZ_TEXT},
+        showgrid=True, zeroline=False,
+    )
+    fig.update_yaxes(
+        gridcolor=_VIZ_GRID, linecolor=_VIZ_AXIS,
+        tickfont={"color": _VIZ_TEXT}, title_font={"color": _VIZ_TEXT},
+        showgrid=True, zeroline=False,
+    )
+    return fig
 
 
 def build_visualization_messages(
@@ -420,20 +583,21 @@ def build_visualization_messages(
 ) -> list[dict[str, str]]:
     """
     Single call that returns both a text answer and a chart_spec derived from session data.
+    The model picks the best chart_type from CHART_SPEC_SCHEMAS and populates it.
     chart_spec is null when the data does not support a meaningful chart.
     """
     session_context = {"session": session_json, "steps": steps_json}
     rules = [
         "Answer the user's question using ONLY the data in 'session_context'.",
         "CRITICAL LANGUAGE RULE: Always write 'assistant_answer' in the same natural language as 'user_question'.",
-        "Simultaneously produce a chart_spec JSON object that best visualises the answer.",
-        "Allowed chart_type values: 'bar' (for categories, counts, scores) or 'line' (for time-series).",
-        "x_values and y_values MUST be the same length; y_values must contain only numbers.",
-        "Derive x_values and y_values PURELY from session_context; do NOT invent any numbers.",
-        "If the session data does not contain enough numeric information for a meaningful chart, set chart_spec to null.",
+        "Simultaneously produce a chart_spec object that best visualises the answer.",
+        "Step 1 — choose the most insightful chart_type from chart_type_guidance based on user_question and data.",
+        "Step 2 — populate chart_spec following EXACTLY the corresponding schema from chart_spec_schemas.",
+        "Derive ALL numeric values PURELY from session_context; do NOT invent any numbers.",
+        "If session data does not contain enough numeric information for a meaningful chart, set chart_spec to null.",
         "Do not mention JSON, schemas, or system internals in assistant_answer.",
         "Output format: a single JSON object with exactly two keys: 'assistant_answer' (string) and "
-        "'chart_spec' (object matching chart_spec_schema, or null). "
+        "'chart_spec' (object matching one schema from chart_spec_schemas, or null). "
         "Do NOT return an array; do NOT wrap the object in a list.",
     ]
     if pending_skill_question:
@@ -442,17 +606,18 @@ def build_visualization_messages(
         )
     prompt = {
         "task": (
-            "You are a data-driven assistant. Answer the user's question AND produce a chart "
-            "that visually represents the answer, both derived from 'session_context'."
+            "You are a data-driven assistant. Answer the user's question AND produce the most insightful chart "
+            "that visually represents the answer, both derived strictly from 'session_context'."
         ),
         "rules": rules,
-        "chart_spec_schema": _CHART_SPEC_SCHEMA,
+        "chart_type_guidance": _CHART_TYPE_GUIDANCE,
+        "chart_spec_schemas": CHART_SPEC_SCHEMAS,
         "session_context": session_context,
         "recent_messages": (recent_history or [])[-6:],
         "user_question": question,
         "output": {
             "assistant_answer": "concise text answer",
-            "chart_spec": _CHART_SPEC_SCHEMA,
+            "chart_spec": "< object matching exactly one schema from chart_spec_schemas, or null >",
         },
     }
     return [
@@ -467,6 +632,54 @@ def build_visualization_messages(
     ]
 
 
+def _validate_chart_spec(cs: dict[str, Any]) -> bool:
+    """Return True if cs has the minimum required fields for its chart_type."""
+    ct = str(cs.get("chart_type", "")).lower()
+    if ct in ("bar", "line", "area", "horizontal_bar"):
+        x, y = cs.get("x_values"), cs.get("y_values")
+        return isinstance(x, list) and isinstance(y, list) and 0 < len(x) == len(y)
+    if ct in ("pie", "donut"):
+        lbl, val = cs.get("labels"), cs.get("values")
+        return isinstance(lbl, list) and isinstance(val, list) and 0 < len(lbl) == len(val)
+    if ct == "scatter":
+        x, y = cs.get("x_values"), cs.get("y_values")
+        ok = isinstance(x, list) and isinstance(y, list) and 0 < len(x) == len(y)
+        if ok and cs.get("point_labels") is not None:
+            ok = isinstance(cs["point_labels"], list) and len(cs["point_labels"]) == len(x)
+        return ok
+    if ct == "stacked_bar":
+        x, series = cs.get("x_values"), cs.get("series")
+        if not isinstance(x, list) or not x or not isinstance(series, list) or not series:
+            return False
+        return all(
+            isinstance(s, dict) and isinstance(s.get("values"), list) and len(s["values"]) == len(x)
+            for s in series
+        )
+    if ct == "funnel":
+        s, v = cs.get("stages"), cs.get("values")
+        return isinstance(s, list) and isinstance(v, list) and 0 < len(s) == len(v)
+    if ct == "gauge":
+        return isinstance(cs.get("value"), (int, float))
+    if ct == "bubble":
+        x, y, sz = cs.get("x_values"), cs.get("y_values"), cs.get("sizes")
+        return (isinstance(x, list) and isinstance(y, list) and isinstance(sz, list)
+                and 0 < len(x) == len(y) == len(sz))
+    if ct == "treemap":
+        lbl, par, val = cs.get("labels"), cs.get("parents"), cs.get("values")
+        return (isinstance(lbl, list) and isinstance(par, list) and isinstance(val, list)
+                and 0 < len(lbl) == len(par) == len(val))
+    if ct == "heatmap":
+        x, y, z = cs.get("x_values"), cs.get("y_values"), cs.get("z_values")
+        return (isinstance(x, list) and isinstance(y, list) and isinstance(z, list)
+                and len(z) == len(y) > 0
+                and all(isinstance(row, list) and len(row) == len(x) for row in z))
+    if ct == "timeline":
+        t, sv, ev = cs.get("tasks"), cs.get("start_values"), cs.get("end_values")
+        return (isinstance(t, list) and isinstance(sv, list) and isinstance(ev, list)
+                and 0 < len(t) == len(sv) == len(ev))
+    return False
+
+
 def parse_visualization_response(raw_text: str) -> tuple[str, dict[str, Any] | None]:
     """Return (assistant_answer, chart_spec_or_None)."""
     answer = ""
@@ -476,14 +689,8 @@ def parse_visualization_response(raw_text: str) -> tuple[str, dict[str, Any] | N
         if isinstance(parsed, dict):
             answer = str(parsed.get("assistant_answer") or "").strip()
             cs = parsed.get("chart_spec")
-            if isinstance(cs, dict) and cs:
-                x = cs.get("x_values")
-                y = cs.get("y_values")
-                if (
-                    isinstance(x, list) and isinstance(y, list)
-                    and len(x) == len(y) > 0
-                ):
-                    chart_spec = cs
+            if isinstance(cs, dict) and cs and _validate_chart_spec(cs):
+                chart_spec = cs
     except Exception:
         answer = raw_text.strip()
     if not answer:
@@ -492,25 +699,297 @@ def parse_visualization_response(raw_text: str) -> tuple[str, dict[str, Any] | N
 
 
 def render_chart_spec(spec: dict[str, Any]) -> None:
-    """Render a chart_spec dict using st.bar_chart / st.line_chart."""
-    import pandas as pd
+    """Render a chart_spec with Plotly (dark modern theme). 14 chart types supported."""
+    try:
+        import plotly.graph_objects as go
+    except ImportError:
+        st.warning("Install plotly to enable charts: `pip install plotly`")
+        return
 
-    title = spec.get("title", "")
-    x_label = spec.get("x_label", "")
-    y_label = spec.get("y_label", "")
-    x_values = spec.get("x_values", [])
-    y_values = spec.get("y_values", [])
-    chart_type = str(spec.get("chart_type", "bar")).lower()
+    ct = str(spec.get("chart_type", "bar")).lower()
+    title = str(spec.get("title", ""))
 
-    if title:
-        st.caption(f"**{title}**")
+    def _colors(n: int) -> list[str]:
+        return (_VIZ_COLORS * ((n // len(_VIZ_COLORS)) + 1))[:n]
 
-    df = pd.DataFrame({x_label or "x": x_values, y_label or "y": y_values})
+    # ── bar / horizontal_bar ─────────────────────────────────────────────────
+    if ct in ("bar", "horizontal_bar"):
+        x_vals = spec.get("x_values", [])
+        y_vals = spec.get("y_values", [])
+        xl = str(spec.get("x_label", ""))
+        yl = str(spec.get("y_label", ""))
+        clrs = _colors(max(len(x_vals), len(y_vals)))
+        if ct == "horizontal_bar":
+            fig = go.Figure(go.Bar(
+                x=x_vals, y=y_vals, orientation="h",
+                marker=dict(color=clrs, line=dict(width=0)),
+                hovertemplate=f"<b>%{{y}}</b><br>{xl}: %{{x}}<extra></extra>",
+            ))
+            fig.update_xaxes(title_text=xl)
+            fig.update_yaxes(title_text=yl, autorange="reversed")
+        else:
+            fig = go.Figure(go.Bar(
+                x=x_vals, y=y_vals,
+                marker=dict(color=clrs, line=dict(width=0)),
+                hovertemplate=f"<b>%{{x}}</b><br>{yl}: %{{y}}<extra></extra>",
+            ))
+            fig.update_xaxes(title_text=xl)
+            fig.update_yaxes(title_text=yl)
+        _apply_dark_layout(fig, title)
+        st.plotly_chart(fig, use_container_width=True)
 
-    if chart_type == "line":
-        st.line_chart(df, x=x_label or "x", y=y_label or "y", x_label=x_label, y_label=y_label)
-    else:
-        st.bar_chart(df, x=x_label or "x", y=y_label or "y", x_label=x_label, y_label=y_label)
+    # ── line / area ──────────────────────────────────────────────────────────
+    elif ct in ("line", "area"):
+        x_vals = spec.get("x_values", [])
+        y_vals = spec.get("y_values", [])
+        xl = str(spec.get("x_label", ""))
+        yl = str(spec.get("y_label", ""))
+        fig = go.Figure(go.Scatter(
+            x=x_vals, y=y_vals, mode="lines+markers",
+            line=dict(color=_VIZ_COLORS[0], width=2.5, shape="spline"),
+            marker=dict(size=7, color=_VIZ_COLORS[0], line=dict(color=_VIZ_PAPER, width=1.5)),
+            fill="tozeroy" if ct == "area" else None,
+            fillcolor="rgba(129,140,248,0.15)" if ct == "area" else None,
+            hovertemplate=f"<b>%{{x}}</b><br>{yl}: %{{y}}<extra></extra>",
+        ))
+        fig.update_xaxes(title_text=xl)
+        fig.update_yaxes(title_text=yl)
+        _apply_dark_layout(fig, title)
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── pie / donut ──────────────────────────────────────────────────────────
+    elif ct in ("pie", "donut"):
+        labels = spec.get("labels", [])
+        values = spec.get("values", [])
+        clrs = _colors(len(labels))
+        fig = go.Figure(go.Pie(
+            labels=labels, values=values,
+            hole=0.45 if ct == "donut" else 0,
+            marker=dict(colors=clrs, line=dict(color=_VIZ_DARK_BG, width=2)),
+            textfont=dict(color=_VIZ_TEXT),
+            hovertemplate="<b>%{label}</b><br>%{value} (%{percent})<extra></extra>",
+        ))
+        if ct == "donut":
+            center = str(spec.get("center_label", ""))
+            if center:
+                fig.update_layout(annotations=[dict(
+                    text=center, x=0.5, y=0.5, showarrow=False,
+                    font=dict(size=15, color=_VIZ_TEXT),
+                )])
+        fig.update_layout(
+            paper_bgcolor=_VIZ_PAPER, plot_bgcolor=_VIZ_DARK_BG,
+            font={"family": "Inter, system-ui, sans-serif", "color": _VIZ_TEXT},
+            title={"text": title, "font": {"size": 16, "color": _VIZ_TEXT}, "x": 0.01},
+            margin={"t": 55, "b": 20, "l": 20, "r": 20},
+            legend={"font": {"color": _VIZ_TEXT}, "bgcolor": "rgba(0,0,0,0)"},
+            colorway=_VIZ_COLORS,
+            hoverlabel={"bgcolor": "#1e293b", "bordercolor": "#475569",
+                        "font": {"color": _VIZ_TEXT}},
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── scatter ──────────────────────────────────────────────────────────────
+    elif ct == "scatter":
+        x_vals = spec.get("x_values", [])
+        y_vals = spec.get("y_values", [])
+        pt_labels = spec.get("point_labels") or [""] * len(x_vals)
+        xl = str(spec.get("x_label", ""))
+        yl = str(spec.get("y_label", ""))
+        fig = go.Figure(go.Scatter(
+            x=x_vals, y=y_vals, mode="markers+text",
+            text=pt_labels, textposition="top center",
+            textfont=dict(color=_VIZ_TEXT, size=10),
+            marker=dict(size=12, color=_VIZ_COLORS[0],
+                        line=dict(color=_VIZ_PAPER, width=1.5)),
+            hovertemplate=f"<b>%{{text}}</b><br>{xl}: %{{x}}<br>{yl}: %{{y}}<extra></extra>",
+        ))
+        fig.update_xaxes(title_text=xl)
+        fig.update_yaxes(title_text=yl)
+        _apply_dark_layout(fig, title)
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── stacked_bar ──────────────────────────────────────────────────────────
+    elif ct == "stacked_bar":
+        x_vals = spec.get("x_values", [])
+        series = spec.get("series", [])
+        xl = str(spec.get("x_label", ""))
+        yl = str(spec.get("y_label", ""))
+        fig = go.Figure()
+        for i, s in enumerate(series):
+            fig.add_trace(go.Bar(
+                name=s.get("name", f"Series {i + 1}"),
+                x=x_vals, y=s.get("values", []),
+                marker=dict(color=_VIZ_COLORS[i % len(_VIZ_COLORS)], line=dict(width=0)),
+                hovertemplate=f"<b>%{{x}}</b><br>{s.get('name', '')}: %{{y}}<extra></extra>",
+            ))
+        fig.update_layout(barmode="stack")
+        fig.update_xaxes(title_text=xl)
+        fig.update_yaxes(title_text=yl)
+        _apply_dark_layout(fig, title)
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── funnel ───────────────────────────────────────────────────────────────
+    elif ct == "funnel":
+        stages = spec.get("stages", [])
+        values = spec.get("values", [])
+        fig = go.Figure(go.Funnel(
+            y=stages, x=values,
+            textinfo="value+percent initial",
+            marker=dict(color=_colors(len(stages)),
+                        line=dict(width=2, color=_VIZ_PAPER)),
+            connector=dict(line=dict(color=_VIZ_GRID, width=1)),
+            hovertemplate="<b>%{y}</b><br>%{x}<extra></extra>",
+        ))
+        fig.update_layout(
+            paper_bgcolor=_VIZ_PAPER, plot_bgcolor=_VIZ_DARK_BG,
+            font={"family": "Inter, system-ui, sans-serif", "color": _VIZ_TEXT},
+            title={"text": title, "font": {"size": 16, "color": _VIZ_TEXT}, "x": 0.01},
+            margin={"t": 55, "b": 30, "l": 130, "r": 20},
+            hoverlabel={"bgcolor": "#1e293b", "bordercolor": "#475569",
+                        "font": {"color": _VIZ_TEXT}},
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── gauge ────────────────────────────────────────────────────────────────
+    elif ct == "gauge":
+        value   = float(spec.get("value", 0))
+        min_val = float(spec.get("min_value", 0))
+        max_val = float(spec.get("max_value", 100))
+        label   = str(spec.get("label", ""))
+        pct = (value - min_val) / (max_val - min_val) if max_val > min_val else 0
+        bar_clr = _VIZ_COLORS[6] if pct >= 0.7 else (_VIZ_COLORS[4] if pct >= 0.4 else _VIZ_COLORS[3])
+        span = max_val - min_val
+        fig = go.Figure(go.Indicator(
+            mode="gauge+number",
+            value=value,
+            number={"font": {"color": _VIZ_TEXT, "size": 40}},
+            title={"text": label, "font": {"color": _VIZ_TEXT, "size": 14}},
+            gauge={
+                "axis": {"range": [min_val, max_val],
+                         "tickcolor": _VIZ_TEXT, "tickfont": {"color": _VIZ_TEXT}},
+                "bar": {"color": bar_clr, "thickness": 0.25},
+                "bgcolor": _VIZ_DARK_BG,
+                "borderwidth": 0,
+                "steps": [
+                    {"range": [min_val, min_val + span * 0.4],
+                     "color": "rgba(100,116,139,0.15)"},
+                    {"range": [min_val + span * 0.4, min_val + span * 0.7],
+                     "color": "rgba(100,116,139,0.3)"},
+                ],
+            },
+        ))
+        fig.update_layout(
+            paper_bgcolor=_VIZ_PAPER,
+            font={"family": "Inter, system-ui, sans-serif", "color": _VIZ_TEXT},
+            title={"text": title, "font": {"size": 16, "color": _VIZ_TEXT}, "x": 0.01},
+            margin={"t": 55, "b": 30, "l": 30, "r": 30},
+            height=280,
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── bubble ───────────────────────────────────────────────────────────────
+    elif ct == "bubble":
+        x_vals = spec.get("x_values", [])
+        y_vals = spec.get("y_values", [])
+        sizes  = spec.get("sizes", [])
+        labels = spec.get("labels") or [""] * len(x_vals)
+        xl = str(spec.get("x_label", ""))
+        yl = str(spec.get("y_label", ""))
+        max_sz = max((float(s) for s in sizes), default=1) or 1
+        norm   = [max(8, 60 * float(s) / max_sz) for s in sizes]
+        clrs   = _colors(len(x_vals))
+        fig = go.Figure(go.Scatter(
+            x=x_vals, y=y_vals, mode="markers+text",
+            text=labels, textposition="top center",
+            textfont=dict(color=_VIZ_TEXT, size=10),
+            marker=dict(size=norm, color=clrs, opacity=0.8,
+                        line=dict(color=_VIZ_PAPER, width=1)),
+            hovertemplate=f"<b>%{{text}}</b><br>{xl}: %{{x}}<br>{yl}: %{{y}}<extra></extra>",
+        ))
+        fig.update_xaxes(title_text=xl)
+        fig.update_yaxes(title_text=yl)
+        _apply_dark_layout(fig, title)
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── treemap ──────────────────────────────────────────────────────────────
+    elif ct == "treemap":
+        labels  = spec.get("labels", [])
+        parents = spec.get("parents", [])
+        values  = spec.get("values", [])
+        n = len(labels)
+        cscale = [[i / max(n - 1, 1), _VIZ_COLORS[i % len(_VIZ_COLORS)]] for i in range(n)]
+        fig = go.Figure(go.Treemap(
+            labels=labels, parents=parents, values=values,
+            branchvalues="total",
+            marker=dict(colors=list(range(n)), colorscale=cscale,
+                        line=dict(width=1, color=_VIZ_PAPER)),
+            textfont=dict(color=_VIZ_TEXT, size=12),
+            hovertemplate="<b>%{label}</b><br>%{value}<extra></extra>",
+        ))
+        fig.update_layout(
+            paper_bgcolor=_VIZ_PAPER,
+            font={"family": "Inter, system-ui, sans-serif", "color": _VIZ_TEXT},
+            title={"text": title, "font": {"size": 16, "color": _VIZ_TEXT}, "x": 0.01},
+            margin={"t": 55, "b": 10, "l": 10, "r": 10},
+            hoverlabel={"bgcolor": "#1e293b", "bordercolor": "#475569",
+                        "font": {"color": _VIZ_TEXT}},
+        )
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── heatmap ──────────────────────────────────────────────────────────────
+    elif ct == "heatmap":
+        x_vals = spec.get("x_values", [])
+        y_vals = spec.get("y_values", [])
+        z_vals = spec.get("z_values", [[]])
+        xl = str(spec.get("x_label", ""))
+        yl = str(spec.get("y_label", ""))
+        fig = go.Figure(go.Heatmap(
+            x=x_vals, y=y_vals, z=z_vals,
+            colorscale=[
+                [0.0, _VIZ_DARK_BG],
+                [0.5, _VIZ_COLORS[0]],
+                [1.0, _VIZ_COLORS[2]],
+            ],
+            showscale=True,
+            hovertemplate=f"{xl}: %{{x}}<br>{yl}: %{{y}}<br>Value: %{{z}}<extra></extra>",
+        ))
+        fig.update_xaxes(title_text=xl)
+        fig.update_yaxes(title_text=yl)
+        _apply_dark_layout(fig, title)
+        st.plotly_chart(fig, use_container_width=True)
+
+    # ── timeline (Gantt) ─────────────────────────────────────────────────────
+    elif ct == "timeline":
+        tasks   = spec.get("tasks", [])
+        starts  = spec.get("start_values", [])
+        ends    = spec.get("end_values", [])
+        cats    = spec.get("categories") or [""] * len(tasks)
+        unique  = list(dict.fromkeys(cats))
+        fig     = go.Figure()
+        seen: set[str] = set()
+        for task, s, e, cat in zip(tasks, starts, ends, cats):
+            ci    = unique.index(cat) if cat else tasks.index(task)
+            color = _VIZ_COLORS[ci % len(_VIZ_COLORS)]
+            dur   = max(float(e) - float(s), 0)
+            fig.add_trace(go.Bar(
+                name=cat or task,
+                x=[dur], y=[task],
+                base=[float(s)],
+                orientation="h",
+                marker=dict(color=color, opacity=0.85, line=dict(width=0)),
+                hovertemplate=(
+                    f"<b>{task}</b><br>Start: {s}<br>End: {e}<br>Duration: {dur}<extra></extra>"
+                ),
+                showlegend=bool(cat) and cat not in seen,
+                legendgroup=cat,
+            ))
+            if cat:
+                seen.add(cat)
+        fig.update_layout(barmode="overlay")
+        fig.update_xaxes(title_text="Step / Time")
+        fig.update_yaxes(autorange="reversed")
+        _apply_dark_layout(fig, title)
+        st.plotly_chart(fig, use_container_width=True)
 
 
 def get_api_key() -> str:
