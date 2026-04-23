@@ -29,7 +29,8 @@ SYSTEM_LANGUAGE_DIRECTIVE = (
 # ---------------------------------------------------------------------------
 # session_question_agent helpers
 # ---------------------------------------------------------------------------
-_ANSWER_KEYS = ("assistant_answer", "answer", "response", "reply", "message", "text")
+_ANSWER_KEYS = ("assistant_answer", "answer",
+                "response", "reply", "message", "text")
 
 
 def _preview_llm_text(text: str | None, limit: int = 600) -> str:
@@ -60,7 +61,8 @@ def _extract_answer_from_parsed(parsed: Any) -> str:
     return ""
 
 
-SUPPORTED_INTENTS = frozenset({"skill_creation", "general_chat", "session_question", "visualization_request"})
+SUPPORTED_INTENTS = frozenset(
+    {"skill_creation", "general_chat", "session_question", "visualization_request"})
 
 # Defaults for OpenRouter completion calls (session + intent agents)
 DEFAULT_OPENROUTER_MODEL = "google/gemini-2.5-pro"
@@ -203,7 +205,8 @@ def call_openrouter(
 
     def _post(body: dict[str, Any]) -> Any:
         ts = dt.datetime.now(dt.timezone.utc).isoformat()
-        r = requests.post(OPENROUTER_URL, headers=headers, json=body, timeout=120)
+        r = requests.post(OPENROUTER_URL, headers=headers,
+                          json=body, timeout=120)
         resp_json: dict[str, Any] | None = None
         try:
             resp_json = r.json()
@@ -213,7 +216,8 @@ def call_openrouter(
         if resp_json and isinstance(resp_json, dict):
             choices = resp_json.get("choices")
             if isinstance(choices, list) and choices:
-                msg = choices[0].get("message") if isinstance(choices[0], dict) else None
+                msg = choices[0].get("message") if isinstance(
+                    choices[0], dict) else None
                 if isinstance(msg, dict) and isinstance(msg.get("content"), str):
                     raw_text = msg["content"]
         if not raw_text and r.text:
@@ -244,7 +248,8 @@ def call_openrouter(
         working = {k: v for k, v in working.items() if k != "response_format"}
         r, resp_json, raw_text = _post(working)
     if r.status_code == 400:
-        minimal = {k: v for k, v in payload.items() if k not in ("response_format", "reasoning")}
+        minimal = {k: v for k, v in payload.items() if k not in (
+            "response_format", "reasoning")}
         r, resp_json, raw_text = _post(minimal)
 
     return OpenRouterResult(text=raw_text, status_code=r.status_code, response_json=resp_json)
@@ -299,7 +304,8 @@ def extract_first_complete_completion_rationale(session_json: Any) -> str | None
         for item in goals:
             if not isinstance(item, dict):
                 continue
-            status = str(item.get("goal_completion_status") or "").strip().lower()
+            status = str(item.get("goal_completion_status")
+                         or "").strip().lower()
             if status != "complete":
                 continue
             cr = item.get("completion_rationale")
@@ -332,7 +338,8 @@ def build_completion_personalization_messages(
 ) -> list[dict[str, str]]:
     prompt = {
         "task": (
-            "Rewrite the session completion rationale into one short, warm, personalized line for the user."
+            "Rewrite the session completion rationale into one short, warm, personalized line for the user. "
+            "The very first words must be a casual hello that uses their name, like \"Hey Peter, …\" in English."
         ),
         "inputs": {
             "user_name": user_name,
@@ -340,7 +347,8 @@ def build_completion_personalization_messages(
             "completion_rationale": completion_rationale,
         },
         "rules": [
-            "Greet the user by name naturally (spoken style, not formal ledgers).",
+            "CRITICAL: Start personalized_message with a short informal salutation that includes user_name as the addressee, "
+            "in the same spirit as English \"Hey Peter,\" or \"Hi Anna,\" — pick the natural equivalent for output_language (not Dear Sir/Madam).",
             "Convey that they have just finished a task or goal, using only facts implied by completion_rationale; do not invent metrics or events.",
             "Write the entire message in the language indicated by output_language: "
             "english, german, ukrainian, or russian.",
@@ -511,7 +519,7 @@ CHART_SPEC_SCHEMAS: dict[str, Any] = {
 
 _CHART_TYPE_GUIDANCE: dict[str, str] = {
     "bar":           "counts, scores, or comparisons across ≤12 categories (vertical bars)",
-    "horizontal_bar":"rankings or comparisons with long category names (horizontal bars)",
+    "horizontal_bar": "rankings or comparisons with long category names (horizontal bars)",
     "line":          "trends or progression over sequential steps or time (connected points)",
     "area":          "cumulative trends or time-on-task (filled line)",
     "pie":           "proportions of a whole — best with 2–7 slices",
@@ -532,10 +540,10 @@ _VIZ_COLORS = [
     "#fbbf24", "#34d399", "#22d3ee", "#38bdf8", "#60a5fa",
 ]
 _VIZ_DARK_BG = "#0f172a"
-_VIZ_PAPER   = "#1e293b"
-_VIZ_TEXT    = "#e2e8f0"
-_VIZ_GRID    = "#334155"
-_VIZ_AXIS    = "#64748b"
+_VIZ_PAPER = "#1e293b"
+_VIZ_TEXT = "#e2e8f0"
+_VIZ_GRID = "#334155"
+_VIZ_AXIS = "#64748b"
 
 
 def _apply_dark_layout(
@@ -545,7 +553,8 @@ def _apply_dark_layout(
 ) -> Any:
     m = margin or {"t": 55, "b": 50, "l": 65, "r": 20, "pad": 4}
     fig.update_layout(
-        title={"text": title, "font": {"size": 16, "color": _VIZ_TEXT}, "x": 0.01},
+        title={"text": title, "font": {
+            "size": 16, "color": _VIZ_TEXT}, "x": 0.01},
         paper_bgcolor=_VIZ_PAPER,
         plot_bgcolor=_VIZ_DARK_BG,
         font={"family": "Inter, system-ui, sans-serif", "color": _VIZ_TEXT},
@@ -643,16 +652,19 @@ def _validate_chart_spec(cs: dict[str, Any]) -> bool:
         return isinstance(lbl, list) and isinstance(val, list) and 0 < len(lbl) == len(val)
     if ct == "scatter":
         x, y = cs.get("x_values"), cs.get("y_values")
-        ok = isinstance(x, list) and isinstance(y, list) and 0 < len(x) == len(y)
+        ok = isinstance(x, list) and isinstance(
+            y, list) and 0 < len(x) == len(y)
         if ok and cs.get("point_labels") is not None:
-            ok = isinstance(cs["point_labels"], list) and len(cs["point_labels"]) == len(x)
+            ok = isinstance(cs["point_labels"], list) and len(
+                cs["point_labels"]) == len(x)
         return ok
     if ct == "stacked_bar":
         x, series = cs.get("x_values"), cs.get("series")
         if not isinstance(x, list) or not x or not isinstance(series, list) or not series:
             return False
         return all(
-            isinstance(s, dict) and isinstance(s.get("values"), list) and len(s["values"]) == len(x)
+            isinstance(s, dict) and isinstance(
+                s.get("values"), list) and len(s["values"]) == len(x)
             for s in series
         )
     if ct == "funnel":
@@ -674,7 +686,8 @@ def _validate_chart_spec(cs: dict[str, Any]) -> bool:
                 and len(z) == len(y) > 0
                 and all(isinstance(row, list) and len(row) == len(x) for row in z))
     if ct == "timeline":
-        t, sv, ev = cs.get("tasks"), cs.get("start_values"), cs.get("end_values")
+        t, sv, ev = cs.get("tasks"), cs.get(
+            "start_values"), cs.get("end_values")
         return (isinstance(t, list) and isinstance(sv, list) and isinstance(ev, list)
                 and 0 < len(t) == len(sv) == len(ev))
     return False
@@ -748,7 +761,8 @@ def render_chart_spec(spec: dict[str, Any]) -> None:
         fig = go.Figure(go.Scatter(
             x=x_vals, y=y_vals, mode="lines+markers",
             line=dict(color=_VIZ_COLORS[0], width=2.5, shape="spline"),
-            marker=dict(size=7, color=_VIZ_COLORS[0], line=dict(color=_VIZ_PAPER, width=1.5)),
+            marker=dict(size=7, color=_VIZ_COLORS[0], line=dict(
+                color=_VIZ_PAPER, width=1.5)),
             fill="tozeroy" if ct == "area" else None,
             fillcolor="rgba(129,140,248,0.15)" if ct == "area" else None,
             hovertemplate=f"<b>%{{x}}</b><br>{yl}: %{{y}}<extra></extra>",
@@ -780,7 +794,8 @@ def render_chart_spec(spec: dict[str, Any]) -> None:
         fig.update_layout(
             paper_bgcolor=_VIZ_PAPER, plot_bgcolor=_VIZ_DARK_BG,
             font={"family": "Inter, system-ui, sans-serif", "color": _VIZ_TEXT},
-            title={"text": title, "font": {"size": 16, "color": _VIZ_TEXT}, "x": 0.01},
+            title={"text": title, "font": {
+                "size": 16, "color": _VIZ_TEXT}, "x": 0.01},
             margin={"t": 55, "b": 20, "l": 20, "r": 20},
             legend={"font": {"color": _VIZ_TEXT}, "bgcolor": "rgba(0,0,0,0)"},
             colorway=_VIZ_COLORS,
@@ -820,7 +835,8 @@ def render_chart_spec(spec: dict[str, Any]) -> None:
             fig.add_trace(go.Bar(
                 name=s.get("name", f"Series {i + 1}"),
                 x=x_vals, y=s.get("values", []),
-                marker=dict(color=_VIZ_COLORS[i % len(_VIZ_COLORS)], line=dict(width=0)),
+                marker=dict(color=_VIZ_COLORS[i % len(
+                    _VIZ_COLORS)], line=dict(width=0)),
                 hovertemplate=f"<b>%{{x}}</b><br>{s.get('name', '')}: %{{y}}<extra></extra>",
             ))
         fig.update_layout(barmode="stack")
@@ -844,7 +860,8 @@ def render_chart_spec(spec: dict[str, Any]) -> None:
         fig.update_layout(
             paper_bgcolor=_VIZ_PAPER, plot_bgcolor=_VIZ_DARK_BG,
             font={"family": "Inter, system-ui, sans-serif", "color": _VIZ_TEXT},
-            title={"text": title, "font": {"size": 16, "color": _VIZ_TEXT}, "x": 0.01},
+            title={"text": title, "font": {
+                "size": 16, "color": _VIZ_TEXT}, "x": 0.01},
             margin={"t": 55, "b": 30, "l": 130, "r": 20},
             hoverlabel={"bgcolor": "#1e293b", "bordercolor": "#475569",
                         "font": {"color": _VIZ_TEXT}},
@@ -853,12 +870,14 @@ def render_chart_spec(spec: dict[str, Any]) -> None:
 
     # ── gauge ────────────────────────────────────────────────────────────────
     elif ct == "gauge":
-        value   = float(spec.get("value", 0))
+        value = float(spec.get("value", 0))
         min_val = float(spec.get("min_value", 0))
         max_val = float(spec.get("max_value", 100))
-        label   = str(spec.get("label", ""))
-        pct = (value - min_val) / (max_val - min_val) if max_val > min_val else 0
-        bar_clr = _VIZ_COLORS[6] if pct >= 0.7 else (_VIZ_COLORS[4] if pct >= 0.4 else _VIZ_COLORS[3])
+        label = str(spec.get("label", ""))
+        pct = (value - min_val) / (max_val -
+                                   min_val) if max_val > min_val else 0
+        bar_clr = _VIZ_COLORS[6] if pct >= 0.7 else (
+            _VIZ_COLORS[4] if pct >= 0.4 else _VIZ_COLORS[3])
         span = max_val - min_val
         fig = go.Figure(go.Indicator(
             mode="gauge+number",
@@ -882,7 +901,8 @@ def render_chart_spec(spec: dict[str, Any]) -> None:
         fig.update_layout(
             paper_bgcolor=_VIZ_PAPER,
             font={"family": "Inter, system-ui, sans-serif", "color": _VIZ_TEXT},
-            title={"text": title, "font": {"size": 16, "color": _VIZ_TEXT}, "x": 0.01},
+            title={"text": title, "font": {
+                "size": 16, "color": _VIZ_TEXT}, "x": 0.01},
             margin={"t": 55, "b": 30, "l": 30, "r": 30},
             height=280,
         )
@@ -892,13 +912,13 @@ def render_chart_spec(spec: dict[str, Any]) -> None:
     elif ct == "bubble":
         x_vals = spec.get("x_values", [])
         y_vals = spec.get("y_values", [])
-        sizes  = spec.get("sizes", [])
+        sizes = spec.get("sizes", [])
         labels = spec.get("labels") or [""] * len(x_vals)
         xl = str(spec.get("x_label", ""))
         yl = str(spec.get("y_label", ""))
         max_sz = max((float(s) for s in sizes), default=1) or 1
-        norm   = [max(8, 60 * float(s) / max_sz) for s in sizes]
-        clrs   = _colors(len(x_vals))
+        norm = [max(8, 60 * float(s) / max_sz) for s in sizes]
+        clrs = _colors(len(x_vals))
         fig = go.Figure(go.Scatter(
             x=x_vals, y=y_vals, mode="markers+text",
             text=labels, textposition="top center",
@@ -914,11 +934,12 @@ def render_chart_spec(spec: dict[str, Any]) -> None:
 
     # ── treemap ──────────────────────────────────────────────────────────────
     elif ct == "treemap":
-        labels  = spec.get("labels", [])
+        labels = spec.get("labels", [])
         parents = spec.get("parents", [])
-        values  = spec.get("values", [])
+        values = spec.get("values", [])
         n = len(labels)
-        cscale = [[i / max(n - 1, 1), _VIZ_COLORS[i % len(_VIZ_COLORS)]] for i in range(n)]
+        cscale = [[i / max(n - 1, 1), _VIZ_COLORS[i % len(_VIZ_COLORS)]]
+                  for i in range(n)]
         fig = go.Figure(go.Treemap(
             labels=labels, parents=parents, values=values,
             branchvalues="total",
@@ -930,7 +951,8 @@ def render_chart_spec(spec: dict[str, Any]) -> None:
         fig.update_layout(
             paper_bgcolor=_VIZ_PAPER,
             font={"family": "Inter, system-ui, sans-serif", "color": _VIZ_TEXT},
-            title={"text": title, "font": {"size": 16, "color": _VIZ_TEXT}, "x": 0.01},
+            title={"text": title, "font": {
+                "size": 16, "color": _VIZ_TEXT}, "x": 0.01},
             margin={"t": 55, "b": 10, "l": 10, "r": 10},
             hoverlabel={"bgcolor": "#1e293b", "bordercolor": "#475569",
                         "font": {"color": _VIZ_TEXT}},
@@ -961,17 +983,17 @@ def render_chart_spec(spec: dict[str, Any]) -> None:
 
     # ── timeline (Gantt) ─────────────────────────────────────────────────────
     elif ct == "timeline":
-        tasks   = spec.get("tasks", [])
-        starts  = spec.get("start_values", [])
-        ends    = spec.get("end_values", [])
-        cats    = spec.get("categories") or [""] * len(tasks)
-        unique  = list(dict.fromkeys(cats))
-        fig     = go.Figure()
+        tasks = spec.get("tasks", [])
+        starts = spec.get("start_values", [])
+        ends = spec.get("end_values", [])
+        cats = spec.get("categories") or [""] * len(tasks)
+        unique = list(dict.fromkeys(cats))
+        fig = go.Figure()
         seen: set[str] = set()
         for task, s, e, cat in zip(tasks, starts, ends, cats):
-            ci    = unique.index(cat) if cat else tasks.index(task)
+            ci = unique.index(cat) if cat else tasks.index(task)
             color = _VIZ_COLORS[ci % len(_VIZ_COLORS)]
-            dur   = max(float(e) - float(s), 0)
+            dur = max(float(e) - float(s), 0)
             fig.add_trace(go.Bar(
                 name=cat or task,
                 x=[dur], y=[task],
@@ -1032,7 +1054,8 @@ def init_state() -> None:
 
 
 def main() -> None:
-    st.set_page_config(page_title="UAE Chat Agents", page_icon="💬", layout="wide")
+    st.set_page_config(page_title="UAE Chat Agents",
+                       page_icon="💬", layout="wide")
     init_state()
 
     api_key = get_api_key()
@@ -1054,7 +1077,8 @@ def main() -> None:
             "anthropic/claude-3.5-sonnet",
             "google/gemini-2.0-flash-001",
         ]
-        choice = st.selectbox("Model", ["Custom"] + presets, index=1, key="model_choice")
+        choice = st.selectbox(
+            "Model", ["Custom"] + presets, index=1, key="model_choice")
         if choice == "Custom":
             model = st.text_input(
                 "Custom model id",
@@ -1086,18 +1110,21 @@ def main() -> None:
 
         if f_sess is not None:
             try:
-                st.session_state.upload_session = json.loads(f_sess.getvalue().decode("utf-8"))
+                st.session_state.upload_session = json.loads(
+                    f_sess.getvalue().decode("utf-8"))
             except json.JSONDecodeError as e:
                 st.error(f"Session file is not valid JSON: {e}")
 
         if f_steps is not None:
             try:
-                st.session_state.upload_steps = json.loads(f_steps.getvalue().decode("utf-8"))
+                st.session_state.upload_steps = json.loads(
+                    f_steps.getvalue().decode("utf-8"))
             except json.JSONDecodeError as e:
                 st.error(f"Steps file is not valid JSON: {e}")
 
         st.subheader("Welcome agents (pre-chat)")
-        starter_user_name = st.text_input("User name", value="Peter", key="starter_user_name")
+        starter_user_name = st.text_input(
+            "User name", value="Peter", key="starter_user_name")
         lang_pair = st.selectbox(
             "Output language",
             options=STARTER_OUTPUT_LANG_OPTIONS,
@@ -1113,7 +1140,8 @@ def main() -> None:
             else:
                 sess = st.session_state.get("upload_session")
                 steps_pl = st.session_state.get("upload_steps")
-                rationale = extract_first_complete_completion_rationale(sess) if sess is not None else None
+                rationale = extract_first_complete_completion_rationale(
+                    sess) if sess is not None else None
                 if sess is None:
                     st.error("Upload a Session (JSON) file first.")
                 elif not rationale:
@@ -1139,7 +1167,8 @@ def main() -> None:
                         agent_name="completion_personalization",
                     )
                     if r1.status_code != 200:
-                        st.error(f"Completion personalization agent HTTP {r1.status_code}. See pipeline export.")
+                        st.error(
+                            f"Completion personalization agent HTTP {r1.status_code}. See pipeline export.")
                     else:
                         st.session_state.starter_personalized = parse_json_single_text(
                             r1.text, "personalized_message"
@@ -1159,7 +1188,8 @@ def main() -> None:
                             agent_name="session_engagement",
                         )
                         if r2.status_code != 200:
-                            st.error(f"Session engagement agent HTTP {r2.status_code}. See pipeline export.")
+                            st.error(
+                                f"Session engagement agent HTTP {r2.status_code}. See pipeline export.")
                         else:
                             st.session_state.starter_engagement = parse_json_single_text(
                                 r2.text, "engagement_message"
@@ -1185,7 +1215,8 @@ def main() -> None:
                 st.session_state.starter_engagement = None
                 st.rerun()
         with c2:
-            st.caption(f"conversation_id: `{st.session_state.conversation_id[:8]}…`")
+            st.caption(
+                f"conversation_id: `{st.session_state.conversation_id[:8]}…`")
 
         export_obj = {
             "meta": {
@@ -1203,7 +1234,8 @@ def main() -> None:
         )
 
     st.title("Intent + Session agents (OpenRouter)")
-    st.caption("Chat uses the same `recent_messages` slice (last 6) for intent and session agents.")
+    st.caption(
+        "Chat uses the same `recent_messages` slice (last 6) for intent and session agents.")
 
     sp0 = st.session_state.get("starter_personalized")
     se0 = st.session_state.get("starter_engagement")
@@ -1260,7 +1292,8 @@ def main() -> None:
             agent_name="visualization_agent",
         )
         if vres.status_code != 200:
-            parts.append(f"Visualization agent HTTP {vres.status_code}. Check pipeline export.")
+            parts.append(
+                f"Visualization agent HTTP {vres.status_code}. Check pipeline export.")
         else:
             v_answer, v_chart = parse_visualization_response(vres.text)
             parts.append(v_answer)
@@ -1291,7 +1324,8 @@ def main() -> None:
             agent_name="session_question",
         )
         if res.status_code != 200:
-            parts.append(f"Session agent HTTP {res.status_code}. Check pipeline export for details.")
+            parts.append(
+                f"Session agent HTTP {res.status_code}. Check pipeline export for details.")
         else:
             parts.append(parse_session_answer(res.text))
     elif explicit_intent == "general_chat":
@@ -1338,7 +1372,8 @@ def main() -> None:
                 parts.append(parse_session_answer(res2.text))
 
     assistant_text = "\n\n".join(parts)
-    assistant_msg: dict[str, Any] = {"role": "assistant", "content": assistant_text}
+    assistant_msg: dict[str, Any] = {
+        "role": "assistant", "content": assistant_text}
     if pending_chart_spec is not None:
         assistant_msg["chart_spec"] = pending_chart_spec
     st.session_state.messages.append(assistant_msg)
