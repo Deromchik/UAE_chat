@@ -335,6 +335,28 @@ def normalize_raw_steps_upload(parsed: Any) -> list[dict[str, Any]]:
     raise ValueError("Steps JSON must be an array, or an object with a steps array key.")
 
 
+def _dict_has_step_array(d: dict[str, Any]) -> bool:
+    for k in ("raw_steps", "session_steps", "steps", "events"):
+        v = d.get(k)
+        if isinstance(v, list):
+            return True
+    return False
+
+
+def _looks_like_single_step_object(d: dict[str, Any]) -> bool:
+    return bool(
+        any(k in d for k in ("stepId", "step_id", "type", "t")) or isinstance(d.get("id"), int)
+    )
+
+
+def _dict_looks_like_session_metadata(d: dict[str, Any]) -> bool:
+    if isinstance(d.get("result"), dict):
+        return True
+    if "goals" in d or d.get("status") is not None or "metrics" in d:
+        return True
+    return False
+
+
 def build_session_messages(
     *,
     question: str,
@@ -611,12 +633,12 @@ def main() -> None:
 
         st.subheader("Session data (JSON uploads)")
         f_sess = st.file_uploader(
-            "Session export — JSON object, or { \"result\": { … } } (parsed activity)",
+            "Session — goals/metrics, or `parsed` export { \"result\": … }; **or** steps **array** ([…] — auto-routed to Steps)",
             type=["json"],
             key="session_json",
         )
         f_steps = st.file_uploader(
-            "Steps — JSON array, or { \"session_steps\" / \"raw_steps\" / \"steps\": [ … ] }",
+            "Steps — array, or object with `session_steps` / `raw_steps` / `steps`; **or** full `parsed` export (fills both)",
             type=["json"],
             key="steps_json",
         )
@@ -624,7 +646,20 @@ def main() -> None:
         if f_sess is not None:
             try:
                 raw_parsed = json.loads(f_sess.getvalue().decode("utf-8"))
-                st.session_state.session_data = normalize_session_data_upload(raw_parsed)
+                if isinstance(raw_parsed, list):
+                    st.session_state.session_data = {}
+                    st.session_state.raw_steps = normalize_raw_steps_upload(raw_parsed)
+                    st.caption(
+                        "ℹ️ У цьому полі знайдено **масив кроків** — застосовано як **Steps**. "
+                        "Метадані сесії (goals) порожні; завантажте parsed export сюди або в друге поле."
+                    )
+                elif isinstance(raw_parsed, dict):
+                    st.session_state.session_data = normalize_session_data_upload(raw_parsed)
+                    if _dict_has_step_array(raw_parsed):
+                        st.session_state.raw_steps = normalize_raw_steps_upload(raw_parsed)
+                else:
+                    st.error("Session JSON must be an object or an array of steps.")
+                    st.session_state.session_data = {}
             except Exception as e:
                 st.error(f"Invalid session JSON: {e}")
                 st.session_state.session_data = {}
@@ -632,10 +667,31 @@ def main() -> None:
         if f_steps is not None:
             try:
                 raw_parsed = json.loads(f_steps.getvalue().decode("utf-8"))
-                st.session_state.raw_steps = normalize_raw_steps_upload(raw_parsed)
+                if isinstance(raw_parsed, list):
+                    st.session_state.raw_steps = normalize_raw_steps_upload(raw_parsed)
+                elif isinstance(raw_parsed, dict):
+                    if _dict_looks_like_session_metadata(raw_parsed):
+                        st.session_state.session_data = normalize_session_data_upload(
+                            raw_parsed
+                        )
+                    if _dict_has_step_array(raw_parsed) or _looks_like_single_step_object(
+                        raw_parsed
+                    ):
+                        st.session_state.raw_steps = normalize_raw_steps_upload(raw_parsed)
+                    elif not _dict_looks_like_session_metadata(raw_parsed):
+                        st.error(
+                            "Steps JSON: очікується масив кроків або об'єкт з полем "
+                            "`session_steps` / `steps` / `raw_steps`."
+                        )
+                    else:
+                        st.caption(
+                            "ℹ️ Тільки метадані (без `session_steps`); додайте масив кроків окремо "
+                            "або повний **parsed** export."
+                        )
+                else:
+                    st.error("Steps JSON must be an object or array.")
             except Exception as e:
                 st.error(f"Invalid steps JSON: {e}")
-                st.session_state.raw_steps = []
 
         pending_skill_q = st.text_input(
             "Pending skill question (optional, session agent only)",
