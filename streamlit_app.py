@@ -1068,6 +1068,66 @@ def messages_to_agent_history(messages: list[dict[str, str]]) -> list[dict[str, 
     return out
 
 
+def _format_ts_utc_caption(ts: str | None) -> str | None:
+    if not isinstance(ts, str) or not ts.strip():
+        return None
+    try:
+        parsed = dt.datetime.fromisoformat(ts.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=dt.timezone.utc)
+        parsed = parsed.astimezone(dt.timezone.utc)
+        return parsed.strftime("%H:%M:%S UTC")
+    except ValueError:
+        return ts.strip()
+
+
+def chat_timing_maxima(messages: list[dict[str, Any]]) -> tuple[float, float]:
+    """Denominators for progress bars: max gap after previous msg, max assistant latency."""
+    max_gap = 1.0
+    max_lat = 1.0
+    for m in messages:
+        g = m.get("gap_since_prev_sec")
+        if isinstance(g, (int, float)) and g >= 0 and float(g) > max_gap:
+            max_gap = float(g)
+        rt = m.get("response_time_sec")
+        if isinstance(rt, (int, float)) and rt >= 0 and float(rt) > max_lat:
+            max_lat = float(rt)
+    return max_gap, max_lat
+
+
+def render_chat_message_timing(
+    m: dict[str, Any], *, max_gap: float, max_latency: float
+) -> None:
+    """Captions + progress bars for user (send time, gap since previous) and assistant (latency)."""
+    role = m.get("role")
+    ts_disp = _format_ts_utc_caption(m.get("ts_utc"))
+
+    if role == "user":
+        cap_parts: list[str] = []
+        if ts_disp:
+            cap_parts.append(f"Sent at {ts_disp}")
+        g = m.get("gap_since_prev_sec")
+        if isinstance(g, (int, float)) and g >= 0:
+            cap_parts.append(f"Since previous message: {float(g):.2f}s")
+        if cap_parts:
+            st.caption(" · ".join(cap_parts))
+        if isinstance(g, (int, float)) and g >= 0 and max_gap > 0:
+            st.progress(min(1.0, float(g) / max_gap))
+        return
+
+    if role == "assistant":
+        rt = m.get("response_time_sec")
+        cap_parts = []
+        if ts_disp:
+            cap_parts.append(f"Completed at {ts_disp}")
+        if isinstance(rt, (int, float)) and rt >= 0:
+            cap_parts.append(f"Response latency: {float(rt):.2f}s")
+        if cap_parts:
+            st.caption(" · ".join(cap_parts))
+        if isinstance(rt, (int, float)) and rt >= 0 and max_latency > 0:
+            st.progress(min(1.0, float(rt) / max_latency))
+
+
 # ---------------------------------------------------------------------------
 # Streamlit UI
 # ---------------------------------------------------------------------------
@@ -1327,16 +1387,56 @@ def main() -> None:
             st.markdown(se0)
         st.divider()
 
+    max_gap, max_latency = chat_timing_maxima(st.session_state.messages)
     for m in st.session_state.messages:
         with st.chat_message(m["role"]):
             st.markdown(m["content"])
             cs = m.get("chart_spec")
             if cs:
                 render_chart_spec(cs)
-            if m.get("role") == "assistant":
-                rt = m.get("response_time_sec")
-                if isinstance(rt, (int, float)) and rt >= 0:
-                    st.caption(f"Response time: {rt:.2f}s")
+            render_chat_message_timing(
+                m, max_gap=max_gap, max_latency=max_latency)
+
+    msgs = st.session_state.messages
+    user_gaps = [
+        float(m["gap_since_prev_sec"])
+        for m in msgs
+        if m.get("role") == "user"
+        and isinstance(m.get("gap_since_prev_sec"), (int, float))
+    ]
+    asst_lat = [
+        float(m["response_time_sec"])
+        for m in msgs
+        if m.get("role") == "assistant"
+        and isinstance(m.get("response_time_sec"), (int, float))
+    ]
+    if user_gaps or asst_lat:
+        import plotly.express as px
+
+        with st.expander("Timing overview (charts)", expanded=False):
+            c1, c2 = st.columns(2)
+            with c1:
+                if user_gaps:
+                    st.caption("User turns: seconds since previous chat message")
+                    fig_g = px.bar(
+                        x=list(range(1, len(user_gaps) + 1)),
+                        y=user_gaps,
+                        labels={"x": "User turn #", "y": "Seconds"},
+                    )
+                    fig_g.update_layout(
+                        height=280, margin=dict(t=8, b=8, l=8, r=8))
+                    st.plotly_chart(fig_g, use_container_width=True)
+            with c2:
+                if asst_lat:
+                    st.caption("Assistant replies: end-to-end latency")
+                    fig_a = px.bar(
+                        x=list(range(1, len(asst_lat) + 1)),
+                        y=asst_lat,
+                        labels={"x": "Reply #", "y": "Seconds"},
+                    )
+                    fig_a.update_layout(
+                        height=280, margin=dict(t=8, b=8, l=8, r=8))
+                    st.plotly_chart(fig_a, use_container_width=True)
 
     if not api_key:
         st.info("Configure `OPENROUTER_API_KEY` in secrets to send messages.")
@@ -1347,7 +1447,37 @@ def main() -> None:
         return
 
     prior_messages = list(st.session_state.messages)
-    st.session_state.messages.append({"role": "user", "content": user_text})
+    t_send = dt.datetime.now(dt.timezone.utc)
+    gap_since_prev_sec: float | None = None
+    if prior_messages:
+        prev = prior_messages[-1]
+        pts = prev.get("ts_utc")
+        if isinstance(pts, str) and pts.strip():
+            try:
+                t_prev = dt.datetime.fromisoformat(
+                    pts.replace("Z", "+00:00"))
+                if t_prev.tzinfo is None:
+                    t_prev = t_prev.replace(tzinfo=dt.timezone.utc)
+                gap_since_prev_sec = max(
+                    0.0,
+                    (
+                        t_send - t_prev.astimezone(dt.timezone.utc)
+                    ).total_seconds(),
+                )
+            except ValueError:
+                gap_since_prev_sec = None
+    st.session_state.messages.append(
+        {
+            "role": "user",
+            "content": user_text,
+            "ts_utc": t_send.isoformat(timespec="seconds"),
+            **(
+                {"gap_since_prev_sec": gap_since_prev_sec}
+                if gap_since_prev_sec is not None
+                else {}
+            ),
+        }
+    )
     prior_hist = messages_to_agent_history(prior_messages)
     recent = prior_hist[-6:] if len(prior_hist) > 6 else prior_hist
     t_reply_start = time.perf_counter()
@@ -1464,10 +1594,12 @@ def main() -> None:
 
     assistant_text = "\n\n".join(parts)
     response_time_sec = time.perf_counter() - t_reply_start
+    t_done = dt.datetime.now(dt.timezone.utc)
     assistant_msg: dict[str, Any] = {
         "role": "assistant",
         "content": assistant_text,
         "response_time_sec": response_time_sec,
+        "ts_utc": t_done.isoformat(timespec="seconds"),
     }
     if pending_chart_spec is not None:
         assistant_msg["chart_spec"] = pending_chart_spec
