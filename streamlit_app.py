@@ -67,6 +67,7 @@ SUPPORTED_INTENTS = frozenset(
 
 # Defaults for OpenRouter completion calls (session + intent agents)
 DEFAULT_OPENROUTER_MODEL = "google/gemini-2.5-pro"
+DEFAULT_CHAT_AGENTS_MODEL = "z-ai/glm-5"
 DEFAULT_COMPLETION_PERSONALIZATION_MODEL = "openai/gpt-4o-mini"
 DEFAULT_SESSION_ENGAGEMENT_MODEL = "moonshotai/kimi-k2-0905"
 LLM_TEMPERATURE = 0.1
@@ -89,9 +90,9 @@ REASONING_EFFORT_OPTIONS: list[tuple[str, str | None]] = [
 ]
 
 AGENT_MODEL_DEFAULTS: dict[str, str] = {
-    "intent_classifier": DEFAULT_OPENROUTER_MODEL,
-    "session_question": DEFAULT_OPENROUTER_MODEL,
-    "visualization_agent": DEFAULT_OPENROUTER_MODEL,
+    "intent_classifier": DEFAULT_CHAT_AGENTS_MODEL,
+    "session_question": DEFAULT_CHAT_AGENTS_MODEL,
+    "visualization_agent": DEFAULT_CHAT_AGENTS_MODEL,
     "completion_personalization": DEFAULT_COMPLETION_PERSONALIZATION_MODEL,
     "session_engagement": DEFAULT_SESSION_ENGAGEMENT_MODEL,
 }
@@ -1284,7 +1285,13 @@ def sidebar_agent_openrouter_config() -> dict[str, tuple[str, str | None]]:
             default_eff_idx = (
                 0
                 if agent_key
-                in ("completion_personalization", "session_engagement")
+                in (
+                    "intent_classifier",
+                    "session_question",
+                    "visualization_agent",
+                    "completion_personalization",
+                    "session_engagement",
+                )
                 else 3
             )
             eff_i = st.selectbox(
