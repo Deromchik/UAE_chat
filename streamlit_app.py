@@ -74,12 +74,7 @@ LLM_TEMPERATURE = 0.1
 MODEL_PRESETS: list[str] = [
     DEFAULT_OPENROUTER_MODEL,
     "openai/gpt-4o-mini",
-    "openai/gpt-4o",
-    "anthropic/claude-3.5-sonnet",
-    "google/gemini-2.0-flash-001",
     "z-ai/glm-5",
-    "z-ai/glm-5.1",
-    "z-ai/glm-4.7",
     "moonshotai/kimi-k2.6",
     "moonshotai/kimi-k2.5",
     "moonshotai/kimi-k2-0905",
@@ -198,6 +193,35 @@ def build_intent_classifier_messages(message: str, history: list[dict[str, str]]
 OPENROUTER_URL = "https://openrouter.ai/api/v1/chat/completions"
 
 
+def openrouter_provider_for_model(model_id: str) -> dict[str, Any] | None:
+    """
+    Per-request OpenRouter `provider` preferences (see provider-selection docs).
+    Slugs verified against https://openrouter.ai/api/v1/providers where listed.
+
+    Aligns with fastest-provider benchmarks for these families. Models without a
+    known slug (e.g. moonshotai/kimi-k2.5 → Eigen AI) omit `provider` so OpenRouter
+    keeps default routing.
+    """
+    m = (model_id or "").strip().lower()
+    if not m:
+        return None
+    if m.startswith("moonshotai/kimi-k2-thinking"):
+        return {"order": ["amazon-bedrock"]}
+    if m.startswith("moonshotai/kimi-k2-0905"):
+        return {"order": ["groq"]}
+    if m.startswith("moonshotai/kimi-k2.6"):
+        return {"order": ["moonshotai"]}
+    if m.startswith("openai/gpt-4o"):
+        return {"order": ["azure"]}
+    if m.startswith("z-ai/glm-5"):
+        return {"order": ["fireworks"]}
+    if m.startswith("deepseek/deepseek-v3.2"):
+        return {"order": ["google-vertex"]}
+    if m.startswith("qwen/qwen3.6-plus"):
+        return {"order": ["alibaba"]}
+    return None
+
+
 def supports_json_format(model: str) -> bool:
     """Prefer json_object; retry without it on 400 from the API."""
     _ = model
@@ -221,6 +245,7 @@ def call_openrouter(
     pipeline: list[dict[str, Any]],
     agent_name: str,
     reasoning_effort: str | None = "high",
+    provider_preferences: dict[str, Any] | None = None,
 ) -> OpenRouterResult:
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -228,11 +253,18 @@ def call_openrouter(
         "HTTP-Referer": "https://github.com/streamlit/streamlit",
         "X-Title": "UAE Chat Agents Demo",
     }
+    prov = (
+        dict(provider_preferences)
+        if provider_preferences is not None
+        else openrouter_provider_for_model(model)
+    )
     payload: dict[str, Any] = {
         "model": model,
         "messages": messages,
         "temperature": temperature,
     }
+    if prov:
+        payload["provider"] = prov
     if reasoning_effort is not None:
         payload["reasoning"] = {"effort": reasoning_effort}
     if use_json_object and supports_json_format(model):
@@ -282,9 +314,12 @@ def call_openrouter(
     if r.status_code == 400 and "response_format" in working:
         working = {k: v for k, v in working.items() if k != "response_format"}
         r, resp_json, raw_text = _post(working)
+    if r.status_code == 400 and "provider" in working:
+        working = {k: v for k, v in working.items() if k != "provider"}
+        r, resp_json, raw_text = _post(working)
     if r.status_code == 400:
         minimal = {k: v for k, v in payload.items() if k not in (
-            "response_format", "reasoning")}
+            "response_format", "reasoning", "provider")}
         r, resp_json, raw_text = _post(minimal)
 
     return OpenRouterResult(text=raw_text, status_code=r.status_code, response_json=resp_json)
@@ -1249,10 +1284,12 @@ def sidebar_agent_openrouter_config() -> dict[str, tuple[str, str | None]]:
                 model_v = choice
             eff_labels = [t[0] for t in REASONING_EFFORT_OPTIONS]
             eff_values = [t[1] for t in REASONING_EFFORT_OPTIONS]
+            default_eff_idx = (
+                0 if agent_key == "completion_personalization" else 3)
             eff_i = st.selectbox(
                 "Reasoning effort",
                 list(range(len(REASONING_EFFORT_OPTIONS))),
-                index=3,
+                index=default_eff_idx,
                 format_func=lambda i, labels=eff_labels: labels[int(i)],
                 key=f"agent_reasoning_idx_{agent_key}",
             )
