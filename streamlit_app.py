@@ -1095,6 +1095,63 @@ def chat_timing_maxima(messages: list[dict[str, Any]]) -> tuple[float, float]:
     return max_gap, max_lat
 
 
+def _welcome_timing_caption(meta: dict[str, Any] | None) -> str | None:
+    if not meta or not isinstance(meta, dict):
+        return None
+    lat = meta.get("latency_sec")
+    ts_disp = _format_ts_utc_caption(meta.get("ts_utc"))
+    http = meta.get("http_status")
+    parts: list[str] = []
+    if ts_disp:
+        parts.append(f"Completed at {ts_disp}")
+    if isinstance(lat, (int, float)) and lat >= 0:
+        parts.append(f"Request time: {float(lat):.2f}s")
+    if http is not None:
+        parts.append(f"HTTP {http}")
+    return " · ".join(parts) if parts else None
+
+
+def render_welcome_flow_blocks() -> None:
+    """Welcome messages from Start (not in chat messages): labels + timing captions."""
+    sp0 = st.session_state.get("starter_personalized")
+    se0 = st.session_state.get("starter_engagement")
+    timing: dict[str, Any] = st.session_state.get("starter_welcome_timing") or {}
+    meta_p = timing.get("completion_personalization")
+    meta_e = timing.get("session_engagement")
+    show_p = bool(sp0) or isinstance(meta_p, dict)
+    show_e = bool(se0) or isinstance(meta_e, dict)
+    if not show_p and not show_e:
+        return
+    st.subheader("Welcome flow (from Start)")
+    if show_p:
+        st.markdown("**Completion personalization**")
+        if sp0:
+            st.markdown(sp0)
+        elif isinstance(meta_p, dict) and meta_p.get("http_status") == 200:
+            st.caption(
+                "No text parsed (`personalized_message`). Inspect the "
+                "`completion_personalization` step in the pipeline export."
+            )
+        if isinstance(meta_p, dict):
+            cap = _welcome_timing_caption(meta_p)
+            if cap:
+                st.caption(cap)
+    if show_e:
+        st.markdown("**Session engagement**")
+        if se0:
+            st.markdown(se0)
+        elif isinstance(meta_e, dict) and meta_e.get("http_status") == 200:
+            st.caption(
+                "No text was parsed (expected JSON key `engagement_message`). "
+                "See `session_engagement` in the pipeline export."
+            )
+        if isinstance(meta_e, dict):
+            cap_e = _welcome_timing_caption(meta_e)
+            if cap_e:
+                st.caption(cap_e)
+    st.divider()
+
+
 def render_chat_message_timing(
     m: dict[str, Any], *, max_gap: float, max_latency: float
 ) -> None:
@@ -1146,6 +1203,10 @@ def init_state() -> None:
         st.session_state.starter_personalized = None
     if "starter_engagement" not in st.session_state:
         st.session_state.starter_engagement = None
+    if "starter_welcome_timing" not in st.session_state:
+        st.session_state.starter_welcome_timing = {}
+    if "starter_flow_notice" not in st.session_state:
+        st.session_state.starter_flow_notice = ""
 
 
 def _default_model_preset_index(default_model: str) -> int:
@@ -1282,6 +1343,8 @@ def main() -> None:
                         "'complete' in the session JSON."
                     )
                 else:
+                    st.session_state.starter_flow_notice = ""
+                    st.session_state.starter_welcome_timing = {}
                     st.session_state.starter_personalized = None
                     st.session_state.starter_engagement = None
                     m1 = build_completion_personalization_messages(
@@ -1290,6 +1353,7 @@ def main() -> None:
                         completion_rationale=rationale,
                     )
                     m_pers, r_pers = agent_cfg["completion_personalization"]
+                    t_a = time.perf_counter()
                     r1 = call_openrouter(
                         api_key,
                         m_pers,
@@ -1300,19 +1364,38 @@ def main() -> None:
                         agent_name="completion_personalization",
                         reasoning_effort=r_pers,
                     )
+                    lat1 = time.perf_counter() - t_a
+                    ts1 = dt.datetime.now(dt.timezone.utc).isoformat(
+                        timespec="seconds")
+                    st.session_state.starter_welcome_timing[
+                        "completion_personalization"] = {
+                        "latency_sec": lat1,
+                        "ts_utc": ts1,
+                        "http_status": r1.status_code,
+                    }
                     if r1.status_code != 200:
-                        st.error(
-                            f"Completion personalization agent HTTP {r1.status_code}. See pipeline export.")
-                    else:
-                        st.session_state.starter_personalized = parse_json_single_text(
-                            r1.text, "personalized_message"
+                        st.session_state.starter_flow_notice = (
+                            f"Completion personalization failed (HTTP {r1.status_code}). "
+                            "Download **pipeline (JSON)** from the sidebar and inspect "
+                            "`completion_personalization`."
                         )
+                    else:
+                        pers_text = parse_json_single_text(
+                            r1.text, "personalized_message"
+                        ).strip()
+                        st.session_state.starter_personalized = pers_text or None
+                        if not pers_text:
+                            st.session_state.starter_flow_notice = (
+                                "Completion personalization returned HTTP 200 but no usable "
+                                "`personalized_message` text was parsed. Check the pipeline export."
+                            )
                         m2 = build_session_engagement_messages(
                             output_language=output_language_code,
                             session_json=sess,
                             steps_json=steps_pl,
                         )
                         m_eng, r_eng = agent_cfg["session_engagement"]
+                        t_b = time.perf_counter()
                         r2 = call_openrouter(
                             api_key,
                             m_eng,
@@ -1323,13 +1406,42 @@ def main() -> None:
                             agent_name="session_engagement",
                             reasoning_effort=r_eng,
                         )
+                        lat2 = time.perf_counter() - t_b
+                        ts2 = dt.datetime.now(dt.timezone.utc).isoformat(
+                            timespec="seconds")
+                        st.session_state.starter_welcome_timing[
+                            "session_engagement"] = {
+                            "latency_sec": lat2,
+                            "ts_utc": ts2,
+                            "http_status": r2.status_code,
+                        }
                         if r2.status_code != 200:
-                            st.error(
-                                f"Session engagement agent HTTP {r2.status_code}. See pipeline export.")
-                        else:
-                            st.session_state.starter_engagement = parse_json_single_text(
-                                r2.text, "engagement_message"
+                            msg2 = (
+                                f"Session engagement failed (HTTP {r2.status_code}). "
+                                "Inspect `session_engagement` in the pipeline export."
                             )
+                            if st.session_state.starter_flow_notice:
+                                st.session_state.starter_flow_notice += " — " + msg2
+                            else:
+                                st.session_state.starter_flow_notice = msg2
+                        else:
+                            eng_text = parse_json_single_text(
+                                r2.text, "engagement_message"
+                            ).strip()
+                            st.session_state.starter_engagement = eng_text or None
+                            if not eng_text:
+                                hint = (
+                                    "Session engagement returned HTTP 200 but no usable "
+                                    "`engagement_message` was parsed (wrong JSON shape or empty). "
+                                    "Open the pipeline JSON and read `response.raw_text` for "
+                                    "`session_engagement`."
+                                )
+                                if st.session_state.starter_flow_notice:
+                                    st.session_state.starter_flow_notice += (
+                                        " — " + hint
+                                    )
+                                else:
+                                    st.session_state.starter_flow_notice = hint
                     st.rerun()
 
         pending_skill_q = st.text_input(
@@ -1349,6 +1461,8 @@ def main() -> None:
                 st.session_state.upload_steps = None
                 st.session_state.starter_personalized = None
                 st.session_state.starter_engagement = None
+                st.session_state.starter_welcome_timing = {}
+                st.session_state.starter_flow_notice = ""
                 st.rerun()
         with c2:
             st.caption(
@@ -1377,15 +1491,11 @@ def main() -> None:
         "Chat uses the same `recent_messages` slice (last 6) for intent and session agents; "
         "each agent’s model and reasoning effort are set in the sidebar.")
 
-    sp0 = st.session_state.get("starter_personalized")
-    se0 = st.session_state.get("starter_engagement")
-    if sp0 or se0:
-        st.subheader("Welcome flow (from Start)")
-        if sp0:
-            st.markdown(sp0)
-        if se0:
-            st.markdown(se0)
-        st.divider()
+    notice0 = (st.session_state.get("starter_flow_notice") or "").strip()
+    if notice0:
+        st.warning(notice0)
+
+    render_welcome_flow_blocks()
 
     max_gap, max_latency = chat_timing_maxima(st.session_state.messages)
     for m in st.session_state.messages:
