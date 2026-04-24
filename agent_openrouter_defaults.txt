@@ -1,0 +1,19 @@
+build_intent_classifier_messages
+модель: z-ai/glm-5
+temperature: 0.1 | response_format: json_object | reasoning: none | provider.order: fireworks
+
+build_session_messages (session_question)
+модель: z-ai/glm-5
+temperature: 0.1 | response_format: json_object | reasoning: none | provider.order: fireworks
+
+build_visualization_messages
+модель: z-ai/glm-5
+temperature: 0.1 | response_format: json_object | reasoning: none | provider.order: fireworks
+
+build_completion_personalization_messages
+модель: openai/gpt-4o-mini
+temperature: 0.1 | response_format: json_object | reasoning: none | provider.order: azure
+
+build_session_engagement_messages
+модель: moonshotai/kimi-k2-0905
+temperature: 0.1 | response_format: json_object | reasoning: none | provider.order: groq

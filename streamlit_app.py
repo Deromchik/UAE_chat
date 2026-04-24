@@ -7,6 +7,7 @@ from __future__ import annotations
 import datetime as dt
 import json
 import time
+import urllib.parse
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -220,6 +221,75 @@ def openrouter_provider_for_model(model_id: str) -> dict[str, Any] | None:
     return None
 
 
+PROVIDER_UI_APP_DEFAULT = "__app_default__"
+PROVIDER_UI_OPENROUTER_AUTO = "__openrouter_auto__"
+
+
+@st.cache_data(ttl=600.0, show_spinner=False)
+def _openrouter_model_rows_by_id() -> dict[str, dict[str, Any]]:
+    try:
+        r = requests.get("https://openrouter.ai/api/v1/models", timeout=90)
+        r.raise_for_status()
+    except Exception:
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for row in r.json().get("data") or []:
+        if isinstance(row, dict) and isinstance(row.get("id"), str):
+            out[row["id"]] = row
+    return out
+
+
+def fetch_model_endpoint_provider_tags(model_id: str) -> list[tuple[str, str]]:
+    """
+    (tag, provider_name) from OpenRouter model endpoints — tags match provider `order` slugs.
+    """
+    mid = (model_id or "").strip()
+    if not mid:
+        return []
+    try:
+        rows = _openrouter_model_rows_by_id()
+    except Exception:
+        return []
+    row = rows.get(mid)
+    path: str | None = None
+    if isinstance(row, dict):
+        links = row.get("links")
+        if isinstance(links, dict):
+            d = links.get("details")
+            if isinstance(d, str) and d.startswith("/"):
+                path = d
+    if not path:
+        path = f"/api/v1/models/{urllib.parse.quote(mid, safe='')}/endpoints"
+    url = f"https://openrouter.ai{path}"
+    try:
+        r = requests.get(url, timeout=45)
+        if r.status_code != 200:
+            return []
+        payload = r.json()
+    except Exception:
+        return []
+    data = payload.get("data")
+    endpoints: list[Any] | None = None
+    if isinstance(data, dict):
+        endpoints = data.get("endpoints")
+    out: list[tuple[str, str]] = []
+    seen: set[str] = set()
+    if isinstance(endpoints, list):
+        for ep in endpoints:
+            if not isinstance(ep, dict):
+                continue
+            tag = ep.get("tag")
+            if not isinstance(tag, str) or not tag.strip():
+                continue
+            tag = tag.strip()
+            if tag in seen:
+                continue
+            seen.add(tag)
+            pname = ep.get("provider_name") or tag
+            out.append((tag, str(pname)))
+    return sorted(out, key=lambda x: x[0].lower())
+
+
 def supports_json_format(model: str) -> bool:
     """Prefer json_object; retry without it on 400 from the API."""
     _ = model
@@ -245,17 +315,22 @@ def call_openrouter(
     reasoning_effort: str | None = "high",
     provider_preferences: dict[str, Any] | None = None,
 ) -> OpenRouterResult:
+    """
+    provider_preferences:
+      None — use openrouter_provider_for_model(model) (app benchmark default).
+      {} — omit `provider` (OpenRouter default routing).
+      {"order": ["slug", ...]} — explicit routing.
+    """
     headers = {
         "Authorization": f"Bearer {api_key}",
         "Content-Type": "application/json",
         "HTTP-Referer": "https://github.com/streamlit/streamlit",
         "X-Title": "UAE Chat Agents Demo",
     }
-    prov = (
-        dict(provider_preferences)
-        if provider_preferences is not None
-        else openrouter_provider_for_model(model)
-    )
+    if provider_preferences is None:
+        prov = openrouter_provider_for_model(model)
+    else:
+        prov = dict(provider_preferences) if provider_preferences else {}
     payload: dict[str, Any] = {
         "model": model,
         "messages": messages,
@@ -1248,9 +1323,9 @@ def _default_model_preset_index(default_model: str) -> int:
     return 0
 
 
-def sidebar_agent_openrouter_config() -> dict[str, tuple[str, str | None]]:
-    """Sidebar widgets: model + reasoning effort per agent. Returns agent_key -> (model_id, effort_or_none)."""
-    cfg: dict[str, tuple[str, str | None]] = {}
+def sidebar_agent_openrouter_config() -> dict[str, tuple[str, str | None, Any]]:
+    """Sidebar: model, reasoning, provider_prefs (None=app default, {}=OR auto, else explicit order)."""
+    cfg: dict[str, tuple[str, str | None, Any]] = {}
     agent_rows: tuple[tuple[str, str], ...] = (
         ("intent_classifier", "Intent classifier"),
         ("session_question", "Session / QA agent"),
@@ -1302,7 +1377,41 @@ def sidebar_agent_openrouter_config() -> dict[str, tuple[str, str | None]]:
                 key=f"agent_reasoning_idx_{agent_key}",
             )
             reasoning_v = eff_values[int(eff_i)]
-            cfg[agent_key] = (model_v, reasoning_v)
+
+            tags = fetch_model_endpoint_provider_tags(model_v)
+            prov_choices: list[tuple[str, str]] = [
+                (
+                    PROVIDER_UI_APP_DEFAULT,
+                    "За замовчуванням (як у додатку)",
+                ),
+                (
+                    PROVIDER_UI_OPENROUTER_AUTO,
+                    "OpenRouter: автоматичний вибір",
+                ),
+            ]
+            for tag, pname in tags:
+                prov_choices.append((tag, f"{tag} — {pname}"))
+            if not tags:
+                st.caption(
+                    "Немає списку провайдерів з OpenRouter для цієї моделі — "
+                    "лише «за замовчуванням» або авто."
+                )
+            prov_idx = st.selectbox(
+                "Provider (OpenRouter)",
+                list(range(len(prov_choices))),
+                index=0,
+                format_func=lambda j, pc=prov_choices: pc[int(j)][1],
+                key=f"agent_provider_idx_{agent_key}",
+            )
+            pkey = prov_choices[int(prov_idx)][0]
+            if pkey == PROVIDER_UI_APP_DEFAULT:
+                prov_pref = None
+            elif pkey == PROVIDER_UI_OPENROUTER_AUTO:
+                prov_pref = {}
+            else:
+                prov_pref = {"order": [pkey]}
+
+            cfg[agent_key] = (model_v, reasoning_v, prov_pref)
             if i < len(agent_rows) - 1:
                 st.divider()
     return cfg
@@ -1397,7 +1506,8 @@ def main() -> None:
                         output_language=output_language_code,
                         completion_rationale=rationale,
                     )
-                    m_pers, r_pers = agent_cfg["completion_personalization"]
+                    m_pers, r_pers, prov_pers = agent_cfg[
+                        "completion_personalization"]
                     t_a = time.perf_counter()
                     r1 = call_openrouter(
                         api_key,
@@ -1408,6 +1518,7 @@ def main() -> None:
                         pipeline=st.session_state.pipeline,
                         agent_name="completion_personalization",
                         reasoning_effort=r_pers,
+                        provider_preferences=prov_pers,
                     )
                     lat1 = time.perf_counter() - t_a
                     ts1 = dt.datetime.now(dt.timezone.utc).isoformat(
@@ -1439,7 +1550,7 @@ def main() -> None:
                             session_json=sess,
                             steps_json=steps_pl,
                         )
-                        m_eng, r_eng = agent_cfg["session_engagement"]
+                        m_eng, r_eng, prov_eng = agent_cfg["session_engagement"]
                         t_b = time.perf_counter()
                         r2 = call_openrouter(
                             api_key,
@@ -1450,6 +1561,7 @@ def main() -> None:
                             pipeline=st.session_state.pipeline,
                             agent_name="session_engagement",
                             reasoning_effort=r_eng,
+                            provider_preferences=prov_eng,
                         )
                         lat2 = time.perf_counter() - t_b
                         ts2 = dt.datetime.now(dt.timezone.utc).isoformat(
@@ -1516,7 +1628,19 @@ def main() -> None:
         export_obj = {
             "meta": {
                 "agents": {
-                    k: {"model": v[0], "reasoning_effort": v[1]}
+                    k: {
+                        "model": v[0],
+                        "reasoning_effort": v[1],
+                        "provider": (
+                            "app_default"
+                            if v[2] is None
+                            else (
+                                "openrouter_auto"
+                                if isinstance(v[2], dict) and len(v[2]) == 0
+                                else v[2]
+                            )
+                        ),
+                    }
                     for k, v in agent_cfg.items()
                 },
                 "conversation_id": st.session_state.conversation_id,
@@ -1641,9 +1765,9 @@ def main() -> None:
     pending_chart_spec: dict[str, Any] | None = None
     session_payload = st.session_state.get("upload_session")
     steps_payload = st.session_state.get("upload_steps")
-    m_vis, r_vis = agent_cfg["visualization_agent"]
-    m_sess, r_sess = agent_cfg["session_question"]
-    m_intent, r_intent = agent_cfg["intent_classifier"]
+    m_vis, r_vis, prov_vis = agent_cfg["visualization_agent"]
+    m_sess, r_sess, prov_sess = agent_cfg["session_question"]
+    m_intent, r_intent, prov_intent = agent_cfg["intent_classifier"]
 
     def _run_visualization(source_label: str) -> None:
         nonlocal pending_chart_spec
@@ -1663,6 +1787,7 @@ def main() -> None:
             pipeline=st.session_state.pipeline,
             agent_name="visualization_agent",
             reasoning_effort=r_vis,
+            provider_preferences=prov_vis,
         )
         if vres.status_code != 200:
             parts.append(
@@ -1696,6 +1821,7 @@ def main() -> None:
             pipeline=st.session_state.pipeline,
             agent_name="session_question",
             reasoning_effort=r_sess,
+            provider_preferences=prov_sess,
         )
         if res.status_code != 200:
             parts.append(
@@ -1713,6 +1839,7 @@ def main() -> None:
             pipeline=st.session_state.pipeline,
             agent_name="intent_classifier",
             reasoning_effort=r_intent,
+            provider_preferences=prov_intent,
         )
         resolved = parse_intent(res.text) if res.status_code == 200 else None
         if resolved is None:
@@ -1741,6 +1868,7 @@ def main() -> None:
                 pipeline=st.session_state.pipeline,
                 agent_name="session_question",
                 reasoning_effort=r_sess,
+                provider_preferences=prov_sess,
             )
             if res2.status_code != 200:
                 parts.append(f"Session agent HTTP {res2.status_code}.")
