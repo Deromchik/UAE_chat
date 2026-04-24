@@ -21,9 +21,9 @@ SYSTEM_LANGUAGE_DIRECTIVE = (
     "Language policy: Use English by default for all visible text you produce. "
     "If the user's latest message (or the user-authored strings in the JSON payload) is clearly "
     "not English, write your entire reply in that same language instead. "
-    "When in doubt, prefer English. "
+    "When in doubt, prefer English."
     "CRITICAL TONE RULE: NEVER expose internal system mechanics, logic, or variables to the user. "
-    "DO NOT mention technical terms like 'null', 'JSON', 'intents', 'skill_creation', 'session_question', or database IDs. "
+    "DO NOT mention technical terms like 'null', 'JSON', 'intents', 'skill_creation', 'session_question', or database IDs."
     "Communicate as a natural, helpful, and professional human assistant."
 )
 
@@ -68,17 +68,14 @@ SUPPORTED_INTENTS = frozenset(
 # Defaults for OpenRouter completion calls (session + intent agents)
 DEFAULT_OPENROUTER_MODEL = "google/gemini-2.5-pro"
 DEFAULT_COMPLETION_PERSONALIZATION_MODEL = "openai/gpt-4o-mini"
-DEFAULT_SESSION_ENGAGEMENT_MODEL = "google/gemini-2.5-pro"
+DEFAULT_SESSION_ENGAGEMENT_MODEL = "moonshotai/kimi-k2-0905"
 LLM_TEMPERATURE = 0.1
 
 MODEL_PRESETS: list[str] = [
     DEFAULT_OPENROUTER_MODEL,
     "openai/gpt-4o-mini",
     "z-ai/glm-5",
-    "moonshotai/kimi-k2.6",
-    "moonshotai/kimi-k2.5",
     "moonshotai/kimi-k2-0905",
-    "moonshotai/kimi-k2-thinking",
     "deepseek/deepseek-v3.2",
     "qwen/qwen3.6-plus",
 ]
@@ -1285,7 +1282,11 @@ def sidebar_agent_openrouter_config() -> dict[str, tuple[str, str | None]]:
             eff_labels = [t[0] for t in REASONING_EFFORT_OPTIONS]
             eff_values = [t[1] for t in REASONING_EFFORT_OPTIONS]
             default_eff_idx = (
-                0 if agent_key == "completion_personalization" else 3)
+                0
+                if agent_key
+                in ("completion_personalization", "session_engagement")
+                else 3
+            )
             eff_i = st.selectbox(
                 "Reasoning effort",
                 list(range(len(REASONING_EFFORT_OPTIONS))),
