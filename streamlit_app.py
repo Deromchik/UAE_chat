@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import datetime as dt
 import json
+import time
 import uuid
 from dataclasses import dataclass
 from typing import Any
@@ -69,7 +70,39 @@ DEFAULT_OPENROUTER_MODEL = "google/gemini-2.5-pro"
 DEFAULT_COMPLETION_PERSONALIZATION_MODEL = "openai/gpt-4o-mini"
 DEFAULT_SESSION_ENGAGEMENT_MODEL = "google/gemini-2.5-pro"
 LLM_TEMPERATURE = 0.1
-COMPLETION_AGENT_REASONING_EFFORT = "high"
+
+MODEL_PRESETS: list[str] = [
+    DEFAULT_OPENROUTER_MODEL,
+    "openai/gpt-4o-mini",
+    "openai/gpt-4o",
+    "anthropic/claude-3.5-sonnet",
+    "google/gemini-2.0-flash-001",
+    "z-ai/glm-5",
+    "z-ai/glm-5.1",
+    "z-ai/glm-4.7",
+    "moonshotai/kimi-k2.6",
+    "moonshotai/kimi-k2.5",
+    "moonshotai/kimi-k2-0905",
+    "moonshotai/kimi-k2-thinking",
+    "deepseek/deepseek-v3.2",
+    "qwen/qwen3.6-plus",
+]
+
+# OpenRouter `reasoning.effort`; None = omit field (same as disabling extended reasoning).
+REASONING_EFFORT_OPTIONS: list[tuple[str, str | None]] = [
+    ("None", None),
+    ("Low", "low"),
+    ("Medium", "medium"),
+    ("High", "high"),
+]
+
+AGENT_MODEL_DEFAULTS: dict[str, str] = {
+    "intent_classifier": DEFAULT_OPENROUTER_MODEL,
+    "session_question": DEFAULT_OPENROUTER_MODEL,
+    "visualization_agent": DEFAULT_OPENROUTER_MODEL,
+    "completion_personalization": DEFAULT_COMPLETION_PERSONALIZATION_MODEL,
+    "session_engagement": DEFAULT_SESSION_ENGAGEMENT_MODEL,
+}
 
 STARTER_OUTPUT_LANG_OPTIONS: list[tuple[str, str]] = [
     ("English", "english"),
@@ -187,6 +220,7 @@ def call_openrouter(
     use_json_object: bool,
     pipeline: list[dict[str, Any]],
     agent_name: str,
+    reasoning_effort: str | None = "high",
 ) -> OpenRouterResult:
     headers = {
         "Authorization": f"Bearer {api_key}",
@@ -198,8 +232,9 @@ def call_openrouter(
         "model": model,
         "messages": messages,
         "temperature": temperature,
-        "reasoning": {"effort": COMPLETION_AGENT_REASONING_EFFORT},
     }
+    if reasoning_effort is not None:
+        payload["reasoning"] = {"effort": reasoning_effort}
     if use_json_object and supports_json_format(model):
         payload["response_format"] = {"type": "json_object"}
 
@@ -1053,6 +1088,60 @@ def init_state() -> None:
         st.session_state.starter_engagement = None
 
 
+def _default_model_preset_index(default_model: str) -> int:
+    if default_model in MODEL_PRESETS:
+        return 1 + MODEL_PRESETS.index(default_model)
+    return 0
+
+
+def sidebar_agent_openrouter_config() -> dict[str, tuple[str, str | None]]:
+    """Sidebar widgets: model + reasoning effort per agent. Returns agent_key -> (model_id, effort_or_none)."""
+    cfg: dict[str, tuple[str, str | None]] = {}
+    agent_rows: tuple[tuple[str, str], ...] = (
+        ("intent_classifier", "Intent classifier"),
+        ("session_question", "Session / QA agent"),
+        ("visualization_agent", "Visualization agent"),
+        ("completion_personalization", "Welcome — completion personalization"),
+        ("session_engagement", "Welcome — session engagement"),
+    )
+    with st.expander("Per-agent model & reasoning", expanded=False):
+        for i, (agent_key, title) in enumerate(agent_rows):
+            st.markdown(f"**{title}**")
+            default_m = AGENT_MODEL_DEFAULTS[agent_key]
+            preset_choices = ["Custom"] + MODEL_PRESETS
+            choice = st.selectbox(
+                "Model",
+                preset_choices,
+                index=_default_model_preset_index(default_m),
+                key=f"agent_model_preset_{agent_key}",
+            )
+            if choice == "Custom":
+                model_v = (
+                    st.text_input(
+                        "Custom model id",
+                        value=default_m,
+                        key=f"agent_model_custom_{agent_key}",
+                    ).strip()
+                    or default_m
+                )
+            else:
+                model_v = choice
+            eff_labels = [t[0] for t in REASONING_EFFORT_OPTIONS]
+            eff_values = [t[1] for t in REASONING_EFFORT_OPTIONS]
+            eff_i = st.selectbox(
+                "Reasoning effort",
+                list(range(len(REASONING_EFFORT_OPTIONS))),
+                index=3,
+                format_func=lambda i, labels=eff_labels: labels[int(i)],
+                key=f"agent_reasoning_idx_{agent_key}",
+            )
+            reasoning_v = eff_values[int(eff_i)]
+            cfg[agent_key] = (model_v, reasoning_v)
+            if i < len(agent_rows) - 1:
+                st.divider()
+    return cfg
+
+
 def main() -> None:
     st.set_page_config(page_title="UAE Chat Agents",
                        page_icon="💬", layout="wide")
@@ -1070,24 +1159,7 @@ def main() -> None:
         else:
             st.success("API key loaded from secrets.")
 
-        presets = [
-            DEFAULT_OPENROUTER_MODEL,
-            "openai/gpt-4o-mini",
-            "openai/gpt-4o",
-            "anthropic/claude-3.5-sonnet",
-            "google/gemini-2.0-flash-001",
-        ]
-        choice = st.selectbox(
-            "Model", ["Custom"] + presets, index=1, key="model_choice")
-        if choice == "Custom":
-            model = st.text_input(
-                "Custom model id",
-                value=DEFAULT_OPENROUTER_MODEL,
-                key="custom_model",
-            )
-        else:
-            model = choice
-        st.session_state.model = model
+        agent_cfg = sidebar_agent_openrouter_config()
 
         explicit_intent = st.radio(
             "Explicit intent (routing)",
@@ -1157,14 +1229,16 @@ def main() -> None:
                         output_language=output_language_code,
                         completion_rationale=rationale,
                     )
+                    m_pers, r_pers = agent_cfg["completion_personalization"]
                     r1 = call_openrouter(
                         api_key,
-                        DEFAULT_COMPLETION_PERSONALIZATION_MODEL,
+                        m_pers,
                         m1,
                         temperature=LLM_TEMPERATURE,
                         use_json_object=True,
                         pipeline=st.session_state.pipeline,
                         agent_name="completion_personalization",
+                        reasoning_effort=r_pers,
                     )
                     if r1.status_code != 200:
                         st.error(
@@ -1178,14 +1252,16 @@ def main() -> None:
                             session_json=sess,
                             steps_json=steps_pl,
                         )
+                        m_eng, r_eng = agent_cfg["session_engagement"]
                         r2 = call_openrouter(
                             api_key,
-                            DEFAULT_SESSION_ENGAGEMENT_MODEL,
+                            m_eng,
                             m2,
                             temperature=LLM_TEMPERATURE,
                             use_json_object=True,
                             pipeline=st.session_state.pipeline,
                             agent_name="session_engagement",
+                            reasoning_effort=r_eng,
                         )
                         if r2.status_code != 200:
                             st.error(
@@ -1220,7 +1296,10 @@ def main() -> None:
 
         export_obj = {
             "meta": {
-                "model": st.session_state.get("model", model),
+                "agents": {
+                    k: {"model": v[0], "reasoning_effort": v[1]}
+                    for k, v in agent_cfg.items()
+                },
                 "conversation_id": st.session_state.conversation_id,
                 "exported_at_utc": dt.datetime.now(dt.timezone.utc).isoformat(),
             },
@@ -1235,7 +1314,8 @@ def main() -> None:
 
     st.title("Intent + Session agents (OpenRouter)")
     st.caption(
-        "Chat uses the same `recent_messages` slice (last 6) for intent and session agents.")
+        "Chat uses the same `recent_messages` slice (last 6) for intent and session agents; "
+        "each agent’s model and reasoning effort are set in the sidebar.")
 
     sp0 = st.session_state.get("starter_personalized")
     se0 = st.session_state.get("starter_engagement")
@@ -1253,6 +1333,10 @@ def main() -> None:
             cs = m.get("chart_spec")
             if cs:
                 render_chart_spec(cs)
+            if m.get("role") == "assistant":
+                rt = m.get("response_time_sec")
+                if isinstance(rt, (int, float)) and rt >= 0:
+                    st.caption(f"Response time: {rt:.2f}s")
 
     if not api_key:
         st.info("Configure `OPENROUTER_API_KEY` in secrets to send messages.")
@@ -1266,12 +1350,15 @@ def main() -> None:
     st.session_state.messages.append({"role": "user", "content": user_text})
     prior_hist = messages_to_agent_history(prior_messages)
     recent = prior_hist[-6:] if len(prior_hist) > 6 else prior_hist
+    t_reply_start = time.perf_counter()
 
     parts: list[str] = []
     pending_chart_spec: dict[str, Any] | None = None
     session_payload = st.session_state.get("upload_session")
     steps_payload = st.session_state.get("upload_steps")
-    model_used = st.session_state.get("model", model)
+    m_vis, r_vis = agent_cfg["visualization_agent"]
+    m_sess, r_sess = agent_cfg["session_question"]
+    m_intent, r_intent = agent_cfg["intent_classifier"]
 
     def _run_visualization(source_label: str) -> None:
         nonlocal pending_chart_spec
@@ -1284,12 +1371,13 @@ def main() -> None:
         )
         vres = call_openrouter(
             api_key,
-            model_used,
+            m_vis,
             vmsgs,
             temperature=LLM_TEMPERATURE,
             use_json_object=True,
             pipeline=st.session_state.pipeline,
             agent_name="visualization_agent",
+            reasoning_effort=r_vis,
         )
         if vres.status_code != 200:
             parts.append(
@@ -1316,12 +1404,13 @@ def main() -> None:
         )
         res = call_openrouter(
             api_key,
-            model_used,
+            m_sess,
             msgs,
             temperature=LLM_TEMPERATURE,
             use_json_object=True,
             pipeline=st.session_state.pipeline,
             agent_name="session_question",
+            reasoning_effort=r_sess,
         )
         if res.status_code != 200:
             parts.append(
@@ -1332,12 +1421,13 @@ def main() -> None:
         msgs = build_intent_classifier_messages(user_text, recent)
         res = call_openrouter(
             api_key,
-            model_used,
+            m_intent,
             msgs,
             temperature=LLM_TEMPERATURE,
             use_json_object=True,
             pipeline=st.session_state.pipeline,
             agent_name="intent_classifier",
+            reasoning_effort=r_intent,
         )
         resolved = parse_intent(res.text) if res.status_code == 200 else None
         if resolved is None:
@@ -1359,12 +1449,13 @@ def main() -> None:
             )
             res2 = call_openrouter(
                 api_key,
-                model_used,
+                m_sess,
                 msgs2,
                 temperature=LLM_TEMPERATURE,
                 use_json_object=True,
                 pipeline=st.session_state.pipeline,
                 agent_name="session_question",
+                reasoning_effort=r_sess,
             )
             if res2.status_code != 200:
                 parts.append(f"Session agent HTTP {res2.status_code}.")
@@ -1372,8 +1463,12 @@ def main() -> None:
                 parts.append(parse_session_answer(res2.text))
 
     assistant_text = "\n\n".join(parts)
+    response_time_sec = time.perf_counter() - t_reply_start
     assistant_msg: dict[str, Any] = {
-        "role": "assistant", "content": assistant_text}
+        "role": "assistant",
+        "content": assistant_text,
+        "response_time_sec": response_time_sec,
+    }
     if pending_chart_spec is not None:
         assistant_msg["chart_spec"] = pending_chart_spec
     st.session_state.messages.append(assistant_msg)
